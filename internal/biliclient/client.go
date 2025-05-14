@@ -147,7 +147,7 @@ func (c *Client) connect(roomId uint32) error {
 	})
 
 	for _, h := range hostList {
-		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s:2245/sub", h), header)
+		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s/sub", h), header)
 		if err == nil {
 			break
 		}
