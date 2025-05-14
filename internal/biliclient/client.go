@@ -243,17 +243,12 @@ func (c *Client) syncRoomInfo() {
 	roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
 	roomInfo.Online = gjson.Get(string(resp.Body), "data.online").Int()
 	roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
-	_time, _ := time.Parse("2006-01-02 15:04:05", gjson.Get(string(resp.Body), "data.live_time").String())
-	seconds := time.Now().Unix() - _time.Unix() + 8*60*60
-	days := seconds / 86400
-	hours := (seconds % 86400) / 3600
-	minutes := (seconds % 3600) / 60
-	if days > 0 {
-		roomInfo.Time = fmt.Sprintf("%d天%d时%d分", days, hours, minutes)
-	} else if hours > 0 {
-		roomInfo.Time = fmt.Sprintf("%d时%d分", hours, minutes)
-	} else {
-		roomInfo.Time = fmt.Sprintf("%d分", minutes)
+	logx.Info(gjson.Get(string(resp.Body), "data.live_time").String())
+	if _time, err := time.ParseInLocation(time.DateTime, gjson.Get(string(resp.Body), "data.live_time").String(), time.Local); err == nil {
+		dur := time.Since(_time)
+		if dur > 0 {
+			roomInfo.Uptime = dur
+		}
 	}
 
 	resp, err = httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{

@@ -191,7 +191,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
-		m.roomInfo.SetContent(fmt.Sprintf("ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v", msg.RoomId, msg.Title, msg.AreaName, msg.Online, msg.Time))
+		m.roomInfo.SetContent(fmt.Sprintf("ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v", msg.RoomId, msg.Title, msg.AreaName, msg.Online, FormatDurationZH(msg.Uptime)))
 
 		users := make([]string, len(msg.OnlineRankUsers))
 		for i, u := range msg.OnlineRankUsers {

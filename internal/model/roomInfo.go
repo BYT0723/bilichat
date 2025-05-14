@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type (
 	RoomInfo struct {
 		RoomId          int              `json:"room_id,omitempty"`
@@ -9,7 +11,7 @@ type (
 		AreaName        string           `json:"area_name,omitempty"`
 		Online          int64            `json:"online,omitempty"`
 		Attention       int64            `json:"attention,omitempty"`
-		Time            string           `json:"time,omitempty"`
+		Uptime          time.Duration    `json:"time,omitempty"`
 		OnlineRankUsers []OnlineRankUser `json:"online_rank_users,omitempty"`
 	}
 	OnlineRankUser struct {
