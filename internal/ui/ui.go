@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -31,8 +32,10 @@ type (
 		messageBox  viewport.Model
 		rankBox     viewport.Model
 		giftBox     viewport.Model
+		interInfo   viewport.Model
 		inputArea   textarea.Model
 		senderStyle lipgloss.Style
+		timeStyle   lipgloss.Style
 		err         error
 	}
 )
@@ -69,19 +72,24 @@ func NewApp() App {
 	inputArea.Prompt = "┃ "
 	inputArea.CharLimit = 280
 	inputArea.SetWidth(30)
-	inputArea.SetHeight(2)
+	inputArea.SetHeight(1)
 	// Remove cursor line styling
 	inputArea.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	inputArea.ShowLineNumbers = false
 	inputArea.KeyMap.InsertNewline.SetEnabled(false)
+
+	interInfo := viewport.New(30, 1)
+	interInfo.KeyMap = viewport.KeyMap{}
 
 	return App{
 		roomInfo:    roomInfo,
 		messageBox:  messageBox,
 		rankBox:     rankBox,
 		giftBox:     giftBox,
+		interInfo:   interInfo,
 		inputArea:   inputArea,
 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		timeStyle:   lipgloss.NewStyle().Foreground(lipgloss.Color("#883388")),
 		err:         nil,
 	}
 }
@@ -96,24 +104,41 @@ func (m App) Init() tea.Cmd {
 
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
-		inputCmd, messageCmd, roomInfoCmd, rankCmd, giftCmd tea.Cmd
-		cmds                                                = []tea.Cmd{inputCmd, messageCmd, roomInfoCmd, rankCmd, giftCmd}
+		cmd  tea.Cmd
+		cmds []tea.Cmd
 	)
 
-	m.inputArea, inputCmd = m.inputArea.Update(msg)
-	m.messageBox, messageCmd = m.messageBox.Update(msg)
-	m.roomInfo, roomInfoCmd = m.roomInfo.Update(msg)
-	m.rankBox, rankCmd = m.rankBox.Update(msg)
-	m.giftBox, giftCmd = m.giftBox.Update(msg)
+	m.inputArea, cmd = m.inputArea.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	m.messageBox, cmd = m.messageBox.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	m.roomInfo, cmd = m.roomInfo.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	m.rankBox, cmd = m.rankBox.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	m.giftBox, cmd = m.giftBox.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.roomInfo.Width = msg.Width
-		rightWidth := min(30, msg.Width/2)
+		rightWidth := min(40, msg.Width/2)
 		m.messageBox.Width = msg.Width - rightWidth
 		m.rankBox.Width = rightWidth
+		m.giftBox.Width = rightWidth
 		m.inputArea.SetWidth(msg.Width)
-		m.messageBox.Height = msg.Height - m.inputArea.Height() - m.roomInfo.Height
+		m.interInfo.Width = msg.Width
+		m.messageBox.Height = msg.Height - m.inputArea.Height() - m.roomInfo.Height - m.interInfo.Height
 
 		topHeight := min(10, msg.Height/2)
 		m.giftBox.Height = topHeight
@@ -132,7 +157,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			message := m.inputArea.Value()
 			if len(message) > 0 {
 				if err := cli.SendMsg(message); err != nil {
-					m.messages = append(m.messages, m.senderStyle.Render("System: ")+"消息发送失败")
+					m.messages = append(m.messages, m.senderStyle.Render("system: ")+"消息发送失败")
 					m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
 					m.messageBox.GotoBottom()
 				}
@@ -142,17 +167,45 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case *model.Danmaku:
 		switch msg.Type {
 		case "SEND_GIFT":
-			m.gifts = append(m.messages, msg.Content)
+			m.gifts = append(m.gifts, fmt.Sprintf("%s %s",
+				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
+				m.senderStyle.Render(msg.Author),
+				msg.Content,
+			))
 			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts, "\n")))
 			m.giftBox.GotoBottom()
+		case "INTERACT_WORD":
+			m.interInfo.SetContent(fmt.Sprintf("%s %s",
+				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
+				m.senderStyle.Render(msg.Author),
+				msg.Content,
+			))
 		default:
-			m.messages = append(m.messages, m.senderStyle.Render(msg.Author)+": "+msg.Content)
+			m.messages = append(m.messages, fmt.Sprintf("%s %s",
+				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
+				m.senderStyle.Render(msg.Author+":"),
+				msg.Content,
+			))
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
 			m.messageBox.GotoBottom()
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
 		m.roomInfo.SetContent(fmt.Sprintf("ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v", msg.RoomId, msg.Title, msg.AreaName, msg.Online, msg.Time))
+
+		users := make([]string, len(msg.OnlineRankUsers))
+		for i, u := range msg.OnlineRankUsers {
+			var (
+				info  = fmt.Sprintf("%d %s", u.Rank, u.Name)
+				score = strconv.Itoa(int(u.Score))
+			)
+
+			spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score)
+			users[i] = info + strings.Repeat(" ", spaceLen) + score
+
+		}
+		m.rankBox.SetContent(strings.Join(users, "\n"))
+
 		cmds = append(cmds, listenRoomInfo())
 	// We handle errors just like any other message
 	case errMsg:
@@ -164,7 +217,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m App) View() string {
-	top := lipgloss.JoinHorizontal(
+	center := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.messageBox.View(),
 		lipgloss.JoinVertical(lipgloss.Top, m.giftBox.View(), m.rankBox.View()),
@@ -174,7 +227,8 @@ func (m App) View() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.roomInfo.View(),
-		top,
+		center,
+		m.interInfo.View(),
 		m.inputArea.View(),
 	)
 }

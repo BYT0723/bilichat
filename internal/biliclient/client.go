@@ -66,8 +66,22 @@ func NewClient(cookie string, roomId uint32) (c *Client, err error) {
 		return
 	}
 
-	go c.syncRoomInfo()
+	// 获取房间历史弹幕
 	go c.getHistoryDanmaku()
+	// 定时获取房间信息
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(30 * time.Second)
+		c.syncRoomInfo()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.syncRoomInfo()
+			}
+		}
+	}(c.ctx)
+
 	go c.handlerMsg()
 	go c.videoHeartBeat()
 	return
@@ -88,17 +102,13 @@ func (c *Client) SendMsg(msg string) error {
 }
 
 func (c *Client) connect(roomId uint32) error {
-	var (
-		uid    uint32
-		header = http.Header{
-			"Cookie":     []string{c.cookie},
-			"Origin":     []string{"https://live.bilibili.com"},
-			"User-Agent": []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"},
-		}
-	)
+	header := http.Header{
+		"Cookie":     []string{c.cookie},
+		"Origin":     []string{"https://live.bilibili.com"},
+		"User-Agent": []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"},
+	}
 	header.Set("Accept", "*/*")
 	header.Set("Accept-Language", "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2")
-	header.Set("Accept-Encoding", "gzip, deflate, br")
 
 	if c.uid == 0 {
 		resp, err := httpx.Getx(c.ctx, "https://api.bilibili.com/x/web-interface/nav", httpx.WithHeader(header))
@@ -118,13 +128,12 @@ func (c *Client) connect(roomId uint32) error {
 	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
 		return fmt.Errorf("failed to get token, status: %v", resp.Code)
 	}
-	resp.Body = brotliDecode(resp.Body)
 
 	var (
 		hsInfo = handShakeInfo{
-			UID:      uid,
+			UID:      c.uid,
 			Roomid:   uint32(roomId),
-			Protover: 3,
+			Protover: 2,
 			Platform: "web",
 			Type:     2,
 			Buvid:    c.cookies["buvid3"],
@@ -138,7 +147,7 @@ func (c *Client) connect(roomId uint32) error {
 	})
 
 	for _, h := range hostList {
-		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s:443/sub", h), header)
+		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s:2245/sub", h), header)
 		if err == nil {
 			break
 		}
@@ -151,7 +160,7 @@ func (c *Client) connect(roomId uint32) error {
 		return err
 	}
 
-	err = c.sendPackage(0, 16, 1, 7, 1, body)
+	err = c.sendPackage(1, 7, 1, body)
 	if err == nil {
 		go c.connHeartBeat()
 	}
@@ -195,7 +204,7 @@ func (c *Client) handlerMsg() {
 						m.Content = "进入了房间"
 					case "SEND_GIFT":
 						m.Author = js.Data["uname"].(string)
-						m.Content = fmt.Sprintf("投喂了 %d 个 %s", int(js.Data["num"].(float64)), js.Data["giftName"].(string))
+						m.Content = fmt.Sprintf("%d 个 %s", int(js.Data["num"].(float64)), js.Data["giftName"].(string))
 					case "USER_TOAST_MSG":
 						m.Author = "system"
 						m.Content = js.Data["toast_msg"].(string)
@@ -215,87 +224,75 @@ func (c *Client) handlerMsg() {
 }
 
 func (c *Client) syncRoomInfo() {
-	ticker := time.NewTicker(30 * time.Second)
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			roomInfo := new(model.RoomInfo)
+	roomInfo := new(model.RoomInfo)
 
-			resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/room/v1/room/get_info", httpx.WithPayload(map[string]any{"room_id": c.roomId}))
-			if err != nil {
-				logx.Errorf("get room information, err: %v", err)
-				continue
-			}
-			if resp.Code != http.StatusOK || len(resp.Body) == 0 {
-				logx.Errorf("get room information, status: %v", resp.Code)
-				continue
-			}
-
-			roomInfo.RoomId = int(c.roomId)
-			roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
-			roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
-			roomInfo.AreaName = gjson.Get(string(resp.Body), "data.area_name").String()
-			roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
-			roomInfo.Online = gjson.Get(string(resp.Body), "data.online").Int()
-			roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
-			_time, _ := time.Parse("2006-01-02 15:04:05", gjson.Get(string(resp.Body), "data.live_time").String())
-			seconds := time.Now().Unix() - _time.Unix() + 8*60*60
-			days := seconds / 86400
-			hours := (seconds % 86400) / 3600
-			minutes := (seconds % 3600) / 60
-			if days > 0 {
-				roomInfo.Time = fmt.Sprintf("%d天%d时%d分", days, hours, minutes)
-			} else if hours > 0 {
-				roomInfo.Time = fmt.Sprintf("%d时%d分", hours, minutes)
-			} else {
-				roomInfo.Time = fmt.Sprintf("%d分", minutes)
-			}
-
-			resp, err = httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{
-				"ruid":     roomInfo.Uid,
-				"roomId":   c.roomId,
-				"page":     1,
-				"pageSize": 50,
-			}))
-			if err != nil {
-				logx.Errorf("get room rank, err: %v", err)
-				continue
-			}
-			if resp.Code != http.StatusOK || len(resp.Body) == 0 {
-				logx.Errorf("get room rank, status: %v", resp.Code)
-				continue
-			}
-
-			rawUsers := gjson.Get(string(resp.Body), "data.OnlineRankItem").Array()
-			for _, rawUser := range rawUsers {
-				user := model.OnlineRankUser{
-					Name:  rawUser.Get("name").String(),
-					Score: rawUser.Get("score").Int(),
-					Rank:  rawUser.Get("userRank").Int(),
-				}
-				roomInfo.OnlineRankUsers = append(roomInfo.OnlineRankUsers, user)
-			}
-			c.roomInfoCh <- roomInfo
-		}
+	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/room/v1/room/get_info", httpx.WithPayload(map[string]any{"room_id": c.roomId}))
+	if err != nil {
+		logx.Errorf("get room information, err: %v", err)
+		return
 	}
+	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
+		logx.Errorf("get room information, status: %v", resp.Code)
+		return
+	}
+
+	roomInfo.RoomId = int(c.roomId)
+	roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
+	roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
+	roomInfo.AreaName = gjson.Get(string(resp.Body), "data.area_name").String()
+	roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
+	roomInfo.Online = gjson.Get(string(resp.Body), "data.online").Int()
+	roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
+	_time, _ := time.Parse("2006-01-02 15:04:05", gjson.Get(string(resp.Body), "data.live_time").String())
+	seconds := time.Now().Unix() - _time.Unix() + 8*60*60
+	days := seconds / 86400
+	hours := (seconds % 86400) / 3600
+	minutes := (seconds % 3600) / 60
+	if days > 0 {
+		roomInfo.Time = fmt.Sprintf("%d天%d时%d分", days, hours, minutes)
+	} else if hours > 0 {
+		roomInfo.Time = fmt.Sprintf("%d时%d分", hours, minutes)
+	} else {
+		roomInfo.Time = fmt.Sprintf("%d分", minutes)
+	}
+
+	resp, err = httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{
+		"ruid":     roomInfo.Uid,
+		"roomId":   c.roomId,
+		"page":     1,
+		"pageSize": 50,
+	}))
+	if err != nil {
+		logx.Errorf("get room rank, err: %v", err)
+		return
+	}
+	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
+		logx.Errorf("get room rank, status: %v", resp.Code)
+		return
+	}
+
+	rawUsers := gjson.Get(string(resp.Body), "data.OnlineRankItem").Array()
+	for _, rawUser := range rawUsers {
+		user := model.OnlineRankUser{
+			Name:  rawUser.Get("name").String(),
+			Score: rawUser.Get("score").Int(),
+			Rank:  rawUser.Get("userRank").Int(),
+		}
+		roomInfo.OnlineRankUsers = append(roomInfo.OnlineRankUsers, user)
+	}
+	c.roomInfoCh <- roomInfo
 }
 
-func (c *Client) sendPackage(packetlen uint32, magic uint16, ver uint16, typeID uint32, param uint32, data []byte) (err error) {
+func (c *Client) sendPackage(ver uint16, typeID uint32, param uint32, data []byte) (err error) {
 	packetHead := new(bytes.Buffer)
 
-	if packetlen == 0 {
-		packetlen = uint32(len(data) + 16)
-	}
-	pdata := []interface{}{
-		packetlen,
-		magic,
+	for _, v := range []any{
+		uint32(len(data) + 16),
+		uint16(16),
 		ver,
 		typeID,
 		param,
-	}
-	for _, v := range pdata {
+	} {
 		if err = binary.Write(packetHead, binary.BigEndian, v); err != nil {
 			return
 		}
@@ -357,15 +354,12 @@ func (c *Client) connHeartBeat() {
 		payload = []byte("5b6f626a656374204f626a6563745d")
 	)
 
-	if err := c.sendPackage(0, 16, 1, 2, 1, payload); err != nil {
-		logx.Error("send conn heart beat, err: ", err)
-	}
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.sendPackage(0, 16, 1, 2, 1, payload); err != nil {
+			if err := c.sendPackage(1, 2, 1, payload); err != nil {
 				logx.Error("send conn heart beat, err: ", err)
 			}
 		}

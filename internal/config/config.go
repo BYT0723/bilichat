@@ -23,14 +23,13 @@ func init() {
 	}
 
 	cfg.Init(
-		cfg.WithConfigPath(dir),
+		cfg.WithConfigPath(dir, "."),
 		cfg.WithConfigName("config"),
 		cfg.WithConfigType("json"),
 		cfg.WithDefaultUnMarshal(&Config),
 	)
 	if Config.Log == nil {
 		Config.Log = &logx.Config{
-			Dir:        "bilichat-logs",
 			Name:       "bilichat",
 			Ext:        "log",
 			Level:      "info",
