@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/BYT0723/go-tools/cfg"
 	"github.com/BYT0723/go-tools/logx"
@@ -18,11 +19,8 @@ type Configuration struct {
 }
 
 func init() {
-	dir, err := getConfigDir()
-	if err != nil {
-		panic(err)
-	}
-	cfgPath := filepath.Join(dir, "config.json")
+	cfgPath := filepath.Join(getConfigDir("bilichat"), "config.json")
+
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		fmt.Printf("cfgPath: %v\n", cfgPath)
 		_ = os.MkdirAll(filepath.Dir(cfgPath), 0700)
@@ -54,10 +52,26 @@ func init() {
 	}
 }
 
-func getConfigDir() (string, error) {
+func getConfigDir(appName string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		panic(err)
 	}
-	return filepath.Join(home, ".config", "bilichat"), nil
+
+	switch runtime.GOOS {
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		return filepath.Join(appData, appName)
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", appName)
+	default: // linux and others
+		configHome := os.Getenv("XDG_CONFIG_HOME")
+		if configHome == "" {
+			configHome = filepath.Join(home, ".config")
+		}
+		return filepath.Join(configHome, appName)
+	}
 }
