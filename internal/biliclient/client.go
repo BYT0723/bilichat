@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -236,6 +237,8 @@ func (c *Client) syncRoomInfo() {
 		return
 	}
 
+	os.WriteFile("room.json", resp.Body, os.ModePerm)
+
 	roomInfo.RoomId = int(c.roomId)
 	roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
 	roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
@@ -243,7 +246,6 @@ func (c *Client) syncRoomInfo() {
 	roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
 	roomInfo.Online = gjson.Get(string(resp.Body), "data.online").Int()
 	roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
-	logx.Info(gjson.Get(string(resp.Body), "data.live_time").String())
 	if _time, err := time.ParseInLocation(time.DateTime, gjson.Get(string(resp.Body), "data.live_time").String(), time.Local); err == nil {
 		dur := time.Since(_time)
 		if dur > 0 {

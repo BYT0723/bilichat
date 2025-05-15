@@ -21,6 +21,12 @@ var (
 	danmakuCh  <-chan *model.Danmaku
 	roomInfoCh <-chan *model.RoomInfo
 	initOnce   sync.Once
+
+	iconHome  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff")).Render("")
+	iconDot   = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("")
+	iconUser  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fafff")).Render("")
+	iconStar  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700")).Render("")
+	iconClock = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999")).Render("")
 )
 
 type (
@@ -192,22 +198,26 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
 		m.roomInfo.SetContent(
-			fmt.Sprintf(
-				"ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v",
-				msg.RoomId,
-				msg.Title,
-				msg.AreaName,
-				msg.Online,
-				FormatDurationZH(msg.Uptime),
+			fmt.Sprintf("%s %s [%s%s %s] | %s %d | %s %d | %s %v",
+				iconHome, msg.Title,
+				msg.ParentAreaName, iconDot, msg.AreaName,
+				iconUser, msg.Online,
+				iconStar, msg.Attention,
+				iconClock, FormatDurationZH(msg.Uptime),
 			),
 		)
 
 		users := make([]string, len(msg.OnlineRankUsers))
 		for i, u := range msg.OnlineRankUsers {
 			var (
-				info  = fmt.Sprintf("%d %s", u.Rank, u.Name)
+				icons = []string{"🥇", "🥈", "🥉"}
+				t     = " "
 				score = strconv.Itoa(int(u.Score))
 			)
+			if int(u.Rank) <= len(icons) {
+				t = icons[u.Rank-1]
+			}
+			info := fmt.Sprintf("%s %s", t, u.Name)
 
 			spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score)
 			users[i] = info + strings.Repeat(" ", spaceLen) + score
