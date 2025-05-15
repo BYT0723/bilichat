@@ -40,7 +40,7 @@ type (
 	}
 )
 
-func NewApp() App {
+func NewApp() *App {
 	initOnce.Do(func() {
 		var err error
 		cli, err = biliclient.NewClient(config.Config.Cookie, uint32(config.Config.RoomId))
@@ -81,7 +81,7 @@ func NewApp() App {
 	interInfo := viewport.New(30, 1)
 	interInfo.KeyMap = viewport.KeyMap{}
 
-	return App{
+	return &App{
 		roomInfo:    roomInfo,
 		messageBox:  messageBox,
 		rankBox:     rankBox,
@@ -94,7 +94,7 @@ func NewApp() App {
 	}
 }
 
-func (m App) Init() tea.Cmd {
+func (m *App) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		listenDanmaku(),
@@ -102,7 +102,7 @@ func (m App) Init() tea.Cmd {
 	)
 }
 
-func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmd  tea.Cmd
 		cmds []tea.Cmd
@@ -191,7 +191,16 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
-		m.roomInfo.SetContent(fmt.Sprintf("ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v", msg.RoomId, msg.Title, msg.AreaName, msg.Online, FormatDurationZH(msg.Uptime)))
+		m.roomInfo.SetContent(
+			fmt.Sprintf(
+				"ID: %d, Name: %s, Area: %s, Online: %d, Uptime: %v",
+				msg.RoomId,
+				msg.Title,
+				msg.AreaName,
+				msg.Online,
+				FormatDurationZH(msg.Uptime),
+			),
+		)
 
 		users := make([]string, len(msg.OnlineRankUsers))
 		for i, u := range msg.OnlineRankUsers {
@@ -216,7 +225,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m App) View() string {
+func (m *App) View() string {
 	center := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.messageBox.View(),
