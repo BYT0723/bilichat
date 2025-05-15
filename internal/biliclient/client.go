@@ -189,6 +189,8 @@ func (c *Client) handlerMsg() {
 						logx.Errorf("message unmarshal, err: %v", err)
 						continue
 					}
+					os.MkdirAll("danmaku", os.ModePerm)
+					os.WriteFile(fmt.Sprintf("danmaku/%s-%s.json", js.Cmd, time.Now().Format(time.RFC3339)), uz, os.ModePerm)
 					m := &model.Danmaku{}
 					switch js.Cmd {
 					case "COMBO_SEND":
@@ -236,8 +238,6 @@ func (c *Client) syncRoomInfo() {
 		logx.Errorf("get room information, status: %v", resp.Code)
 		return
 	}
-
-	os.WriteFile("room.json", resp.Body, os.ModePerm)
 
 	roomInfo.RoomId = int(c.roomId)
 	roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
