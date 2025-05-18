@@ -65,10 +65,16 @@ type (
 	}
 )
 
-func NewApp() *App {
+func NewApp(cookie string, roomId int64) *App {
+	if cookie == "" {
+		cookie = config.Config.Cookie
+	}
+	if roomId == 0 {
+		roomId = config.Config.RoomId
+	}
 	initOnce.Do(func() {
 		var err error
-		cli, err = biliclient.NewClient(config.Config.Cookie, uint32(config.Config.RoomId))
+		cli, err = biliclient.NewClient(cookie, uint32(roomId))
 		if err != nil {
 			panic(err)
 		}

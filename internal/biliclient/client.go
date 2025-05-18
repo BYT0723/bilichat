@@ -181,7 +181,9 @@ func (c *Client) handlerMsg() {
 				logx.Errorf("receiveRawMsg, err: %v", err)
 				return
 			}
-			if len(rawMsg) >= 8 && rawMsg[7] == 2 {
+
+			version := binary.BigEndian.Uint16(rawMsg[6:8])
+			if len(rawMsg) >= 8 && version == 2 {
 				for _, msg := range splitMsg(zlibUnCompress(rawMsg[16:])) {
 					var (
 						body = gjson.ParseBytes(msg[16:])
