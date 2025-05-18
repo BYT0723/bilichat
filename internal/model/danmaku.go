@@ -6,5 +6,5 @@ type Danmaku struct {
 	Author  string
 	Content string
 	Type    string
-	Time    time.Time
+	T       time.Time
 }

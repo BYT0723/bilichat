@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BYT0723/bilichat/internal/biliclient"
 	"github.com/BYT0723/bilichat/internal/config"
@@ -22,27 +23,45 @@ var (
 	roomInfoCh <-chan *model.RoomInfo
 	initOnce   sync.Once
 
-	iconHome  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff")).Render("")
-	iconDot   = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("")
-	iconUser  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fafff")).Render("")
-	iconStar  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700")).Render("")
-	iconClock = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999")).Render("")
+	roomInfoHomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff"))
+	roomInfoZoneStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	roomInfoUserStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fafff"))
+	roomInfoStarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
+	roomInfoUptimeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999"))
+
+	borderStyle = lipgloss.RoundedBorder()
 )
 
 type (
 	errMsg error
 	App    struct {
-		roomInfo    viewport.Model
+		// 房间信息
+		roomInfo viewport.Model
+
+		// sc 醒目留言
+		sc    []string
+		scBox viewport.Model
+
+		// 弹幕
 		messages    []string
-		gifts       []string
 		messageBox  viewport.Model
-		rankBox     viewport.Model
-		giftBox     viewport.Model
-		interInfo   viewport.Model
-		inputArea   textarea.Model
 		senderStyle lipgloss.Style
-		timeStyle   lipgloss.Style
-		err         error
+
+		// 礼物
+		gifts   []string
+		giftBox viewport.Model
+
+		// 打榜
+		rankBox viewport.Model
+
+		// 进房
+		interInfo viewport.Model
+
+		// 输入
+		inputArea textarea.Model
+
+		timeStyle lipgloss.Style
+		err       error
 	}
 )
 
@@ -62,15 +81,20 @@ func NewApp() *App {
 	messageBox := viewport.New(30, 5)
 	messageBox.KeyMap.Down.SetKeys("ctrl+n")
 	messageBox.KeyMap.Up.SetKeys("ctrl+p")
-	messageBox.Style = messageBox.Style.Border(lipgloss.RoundedBorder())
+	messageBox.Style = messageBox.Style.Border(borderStyle)
+
+	scBox := viewport.New(30, 5)
+	scBox.KeyMap.Down.SetKeys("ctrl+n")
+	scBox.KeyMap.Up.SetKeys("ctrl+p")
+	scBox.Style = scBox.Style.Border(borderStyle)
 
 	rankBox := viewport.New(30, 5)
 	rankBox.KeyMap = viewport.KeyMap{}
-	rankBox.Style = rankBox.Style.Border(lipgloss.RoundedBorder())
+	rankBox.Style = rankBox.Style.Border(borderStyle)
 
 	giftBox := viewport.New(30, 5)
 	giftBox.KeyMap = viewport.KeyMap{}
-	giftBox.Style = rankBox.Style.Border(lipgloss.RoundedBorder())
+	giftBox.Style = rankBox.Style.Border(borderStyle)
 
 	inputArea := textarea.New()
 	inputArea.Placeholder = "Send a message..."
@@ -90,6 +114,7 @@ func NewApp() *App {
 	return &App{
 		roomInfo:    roomInfo,
 		messageBox:  messageBox,
+		scBox:       scBox,
 		rankBox:     rankBox,
 		giftBox:     giftBox,
 		interInfo:   interInfo,
@@ -139,12 +164,14 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.roomInfo.Width = msg.Width
 		rightWidth := min(40, msg.Width/2)
-		m.messageBox.Width = msg.Width - rightWidth
+		m.messageBox.Width = (msg.Width - rightWidth) / 2
+		m.scBox.Width = m.messageBox.Width
 		m.rankBox.Width = rightWidth
 		m.giftBox.Width = rightWidth
 		m.inputArea.SetWidth(msg.Width)
 		m.interInfo.Width = msg.Width
 		m.messageBox.Height = msg.Height - m.inputArea.Height() - m.roomInfo.Height - m.interInfo.Height
+		m.scBox.Height = m.messageBox.Height
 
 		topHeight := min(10, msg.Height/2)
 		m.giftBox.Height = topHeight
@@ -153,8 +180,10 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.messages) > 0 {
 			// Wrap content before setting it.
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
+			m.scBox.SetContent(lipgloss.NewStyle().Width(m.scBox.Width).Render(strings.Join(m.sc, "\n")))
 		}
 		m.messageBox.GotoBottom()
+		m.scBox.GotoBottom()
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
@@ -173,37 +202,29 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case *model.Danmaku:
 		switch msg.Type {
 		case "SEND_GIFT":
-			m.gifts = append(m.gifts, fmt.Sprintf("%s %s",
-				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
-				m.senderStyle.Render(msg.Author),
-				msg.Content,
-			))
+			m.gifts = append(m.gifts, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts, "\n")))
 			m.giftBox.GotoBottom()
 		case "INTERACT_WORD":
-			m.interInfo.SetContent(fmt.Sprintf("%s %s",
-				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
-				m.senderStyle.Render(msg.Author),
-				msg.Content,
-			))
+			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
+		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
+			m.sc = append(m.sc, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
+			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
+			m.scBox.GotoBottom()
 		default:
-			m.messages = append(m.messages, fmt.Sprintf("%s %s",
-				// m.timeStyle.Render("["+time.Now().Format(time.TimeOnly)+"]"),
-				m.senderStyle.Render(msg.Author+":"),
-				msg.Content,
-			))
+			m.messages = append(m.messages, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
 			m.messageBox.GotoBottom()
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
 		m.roomInfo.SetContent(
-			fmt.Sprintf("%s %s [%s%s %s] | %s %d | %s %d | %s %v",
-				iconHome, msg.Title,
-				msg.ParentAreaName, iconDot, msg.AreaName,
-				iconUser, msg.Online,
-				iconStar, msg.Attention,
-				iconClock, FormatDurationZH(msg.Uptime),
+			fmt.Sprintf("%s %s | %s %d | %s %d | %s %v",
+				roomInfoHomeStyle.Render(" ")+msg.Title,
+				roomInfoZoneStyle.Render("["+msg.ParentAreaName+" "+msg.AreaName+"]"),
+				roomInfoUserStyle.Render(""), msg.Online,
+				roomInfoStarStyle.Render(""), msg.Attention,
+				roomInfoUptimeStyle.Render(""), FormatDurationZH(msg.Uptime/time.Minute*time.Minute),
 			),
 		)
 
@@ -219,7 +240,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			info := fmt.Sprintf("%s %s", t, u.Name)
 
-			spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score)
+			spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score) - m.rankBox.Style.GetHorizontalBorderSize()
 			users[i] = info + strings.Repeat(" ", spaceLen) + score
 
 		}
@@ -239,6 +260,7 @@ func (m *App) View() string {
 	center := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.messageBox.View(),
+		m.scBox.View(),
 		lipgloss.JoinVertical(lipgloss.Top, m.giftBox.View(), m.rankBox.View()),
 	)
 

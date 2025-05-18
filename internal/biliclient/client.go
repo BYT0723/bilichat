@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,45 +182,67 @@ func (c *Client) handlerMsg() {
 				return
 			}
 			if len(rawMsg) >= 8 && rawMsg[7] == 2 {
-				msgs := splitMsg(zlibUnCompress(rawMsg[16:]))
-				for _, msg := range msgs {
-					uz := msg[16:]
-					js := new(receivedInfo)
-					if err := json.Unmarshal(uz, js); err != nil {
-						logx.Errorf("message unmarshal, err: %v", err)
-						continue
+				for _, msg := range splitMsg(zlibUnCompress(rawMsg[16:])) {
+					var (
+						body = gjson.ParseBytes(msg[16:])
+						dmk  = &model.Danmaku{}
+						cmd  = body.Get("cmd").String()
+					)
+
+					if os.Getenv("BILICHAT_DEBUG") == "1" {
+						_ = os.MkdirAll("danmaku", os.ModePerm)
+						_ = os.WriteFile(fmt.Sprintf("danmaku/%s-%s.json", cmd, time.Now().Format(time.RFC3339)), msg[16:], os.ModePerm)
 					}
-					os.MkdirAll("danmaku", os.ModePerm)
-					os.WriteFile(fmt.Sprintf("danmaku/%s-%s.json", js.Cmd, time.Now().Format(time.RFC3339)), uz, os.ModePerm)
-					m := &model.Danmaku{}
-					switch js.Cmd {
-					case "COMBO_SEND":
-						m.Author = js.Data["uname"].(string)
-						m.Content = fmt.Sprintf("送给 %s %d 个 %s", js.Data["r_uname"].(string), int(js.Data["combo_num"].(float64)), js.Data["gift_name"].(string))
+					switch cmd {
 					case "DANMU_MSG":
-						m.Author = js.Info[2].([]any)[1].(string)
-						m.Content = js.Info[1].(string)
+						dmk.Author = body.Get("info.2.1").String()
+						dmk.Content = body.Get("info.1").String()
+					case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
+						dmk.Author = fmt.Sprintf("%s [¥ %d]",
+							body.Get("data.user_info.uname").String(),
+							body.Get("data.price").Int(),
+						)
+						dmk.Content = body.Get("data.message").String()
+					case "COMBO_SEND":
+						dmk.Author = body.Get("data.r_uname").String()
+						dmk.Content = fmt.Sprintf(
+							"%s %d * %s",
+							body.Get("data.action").String(),
+							body.Get("data.combo_num").Int(),
+							body.Get("data.gift_name").String(),
+						)
 					case "GUARD_BUY":
-						m.Author = js.Data["username"].(string)
-						m.Content = fmt.Sprintf("购买了 %s", js.Data["giftName"].(string))
+						dmk.Author = body.Get("data.username").String()
+						dmk.Content = fmt.Sprintf(
+							"%d * %s",
+							body.Get("data.num").Int(),
+							body.Get("data.gift_name").String(),
+						)
 					case "INTERACT_WORD":
-						m.Author = js.Data["uname"].(string)
-						m.Content = "进入了房间"
+						dmk.Author = body.Get("data.uname").String()
+						dmk.Content = "进入直播间"
 					case "SEND_GIFT":
-						m.Author = js.Data["uname"].(string)
-						m.Content = fmt.Sprintf("%d 个 %s", int(js.Data["num"].(float64)), js.Data["giftName"].(string))
-					case "USER_TOAST_MSG":
-						m.Author = "system"
-						m.Content = js.Data["toast_msg"].(string)
-					case "NOTICE_MSG":
-						m.Author = "system"
-						m.Content = js.MsgSelf
+						dmk.Author = body.Get("data.uname").String()
+						dmk.Content = fmt.Sprintf(
+							"%s %d * %s",
+							body.Get("data.action").String(),
+							body.Get("data.num").Int(),
+							body.Get("data.giftName").String(),
+						)
 					default: // "LIVE" "ACTIVITY_BANNER_UPDATE_V2" "ONLINE_RANK_COUNT" "ONLINE_RANK_TOP3" "ONLINE_RANK_V2" "PANEL" "PREPARING" "WIDGET_BANNER" "LIVE_INTERACTIVE_GAME"
 						continue
 					}
-					m.Type = js.Cmd
-					m.Time = time.Now()
-					c.msgCh <- m
+					// GUARD_BUY        上舰长
+					// USER_TOAST_MSG   续费了舰长
+					// NOTICE_MSG       在本房间续费了舰长
+					// ANCHOR_LOT_START 天选之人开始完整信息
+					// ANCHOR_LOT_END   天选之人获奖id
+					// ANCHOR_LOT_AWARD 天选之人获奖完整信息
+
+					dmk.Content = strings.ReplaceAll(dmk.Content, "\r", "")
+					dmk.Type = cmd
+					dmk.T = time.Now()
+					c.msgCh <- dmk
 				}
 			}
 		}
@@ -320,7 +343,7 @@ func (c *Client) getHistoryDanmaku() {
 				Author:  history.Get("nickname").String(),
 				Content: history.Get("text").String(),
 				Type:    "DANMU_MSG",
-				Time:    t,
+				T:       t,
 			}
 		}
 	})

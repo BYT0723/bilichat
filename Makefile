@@ -15,3 +15,6 @@ clean:
 
 run:
 	@go run main.go
+
+debug:
+	@BILICHAT_DEBUG=1 go run main.go
