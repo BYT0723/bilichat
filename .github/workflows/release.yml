@@ -19,6 +19,13 @@ jobs:
         with:
           go-version: "stable"
 
+      - name: Install UPX
+        run: |
+          curl -LO https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
+          tar -xf upx-5.0.1-amd64_linux.tar.xz
+          sudo mv upx-5.0.1-amd64_linux/upx /usr/local/bin/
+          upx --version
+
       - name: Build with Makefile
         run: make build
 

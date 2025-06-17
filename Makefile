@@ -10,6 +10,11 @@ build:
 	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o $(BUILD_DIR)/$(APP)-darwin-amd64
 	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o $(BUILD_DIR)/$(APP)-darwin-arm64
 
+compress:
+	upx $(BUILD_DIR)/$(APP)-linux-amd64
+	upx $(BUILD_DIR)/$(APP)-linux-arm64
+	upx $(BUILD_DIR)/$(APP)-windows-amd64.exe
+
 clean:
 	@rm -r $(BUILD_DIR)
 
