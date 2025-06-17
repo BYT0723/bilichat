@@ -27,7 +27,7 @@ jobs:
           upx --version
 
       - name: Build with Makefile
-        run: make build
+        run: make build compress
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
