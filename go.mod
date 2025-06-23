@@ -3,7 +3,7 @@ module github.com/BYT0723/bilichat
 go 1.24.3
 
 require (
-	github.com/BYT0723/go-tools v0.0.22
+	github.com/BYT0723/go-tools v0.0.24
 	github.com/andybalholm/brotli v1.1.1
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.5

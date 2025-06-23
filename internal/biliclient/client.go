@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -118,18 +119,36 @@ func (c *Client) connect(roomId uint32) error {
 			return fmt.Errorf("failed to get user_id, err: %v", err)
 		}
 		if resp.Code != http.StatusOK || len(resp.Body) == 0 {
-			return fmt.Errorf("failed to get user_id, status: %v", resp.Code)
+			return fmt.Errorf("failed to get user_id, http status: %v", resp.Code)
+		}
+		if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
+			return fmt.Errorf("failed to get user_id, code: %v", code)
 		}
 		c.uid = uint32(gjson.GetBytes(resp.Body, "data.mid").Int())
 	}
 
-	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo", httpx.WithHeader(header), httpx.WithPayload(map[string]any{"id": roomId}))
+	// FIX: -352 code
+	resp, err := httpx.Getx(
+		c.ctx,
+		"https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo",
+		httpx.WithHeader(header),
+		httpx.WithPayload(map[string]any{
+			"id":   roomId,
+			"type": 0,
+		}),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get token, err: %v", err)
 	}
 	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
 		return fmt.Errorf("failed to get token, status: %v", resp.Code)
 	}
+
+	if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
+		return fmt.Errorf("failed to get token, code: %v", code)
+	}
+
+	os.WriteFile("room.json", resp.Body, os.ModePerm)
 
 	var (
 		hsInfo = handShakeInfo{
@@ -147,6 +166,10 @@ func (c *Client) connect(roomId uint32) error {
 		hostList = append(hostList, value.Get("host").String())
 		return true
 	})
+
+	if len(hostList) == 0 {
+		return errors.New("failed to get wss host")
+	}
 
 	for _, h := range hostList {
 		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s/sub", h), header)

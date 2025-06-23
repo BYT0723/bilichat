@@ -13,18 +13,18 @@ import (
 var Config Configuration
 
 type Configuration struct {
-	Log    *logx.Config
-	Cookie string
-	RoomId int64
+	Cookie  string  `cfg:"cookie"`
+	RoomID  int64   `cfg:"room_id"`
+	History History `cfg:"history"`
 }
 
 func init() {
-	cfgPath := filepath.Join(getConfigDir("bilichat"), "config.json")
+	cfgPath := filepath.Join(getConfigDir("bilichat"), "config.yaml")
 
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		fmt.Printf("cfgPath: %v\n", cfgPath)
 		_ = os.MkdirAll(filepath.Dir(cfgPath), 0700)
-		_ = os.WriteFile(cfgPath, []byte("{\n\t\"Cookie\": \"\",\n\t\"RoomId\": 0\n}"), 0700)
+		_ = os.WriteFile(cfgPath, []byte("{\n\t\"cookie\": \"\",\n\t\"room_id\": 0\n}"), 0700)
 
 		fmt.Printf("Configuration %s has been generated, please modify the configuration in time\n", cfgPath)
 		os.Exit(0)
@@ -32,22 +32,30 @@ func init() {
 
 	cfg.Init(
 		cfg.WithConfigFile(cfgPath),
-		cfg.WithConfigType("json"),
+		cfg.WithConfigType("yaml"),
 		cfg.WithDefaultUnMarshal(&Config),
 	)
-	if Config.Log == nil {
-		Config.Log = &logx.Config{
-			Name:       "bilichat",
-			Ext:        "log",
-			Level:      "info",
-			Single:     false,
-			MaxBackups: 5,
-			MaxSize:    1,
-			MaxAge:     7,
-			Console:    false,
-		}
+
+	if Config.History.Danmaku == 0 {
+		Config.History.Danmaku = 1024
 	}
-	if err := logx.Init(logx.WithConf(Config.Log)); err != nil {
+	if Config.History.SC == 0 {
+		Config.History.SC = 512
+	}
+	if Config.History.Gift == 0 {
+		Config.History.Gift = 512
+	}
+
+	if err := logx.Init(logx.WithConf(&logx.Config{
+		Name:       "bilichat",
+		Ext:        "log",
+		Level:      "info",
+		Single:     false,
+		MaxBackups: 5,
+		MaxSize:    1,
+		MaxAge:     7,
+		Console:    false,
+	})); err != nil {
 		panic(err)
 	}
 }

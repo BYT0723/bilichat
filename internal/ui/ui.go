@@ -10,6 +10,7 @@ import (
 	"github.com/BYT0723/bilichat/internal/biliclient"
 	"github.com/BYT0723/bilichat/internal/config"
 	"github.com/BYT0723/bilichat/internal/model"
+	"github.com/BYT0723/go-tools/ds"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -39,16 +40,16 @@ type (
 		roomInfo viewport.Model
 
 		// sc 醒目留言
-		sc    []string
+		sc    *ds.ArrayRing[string]
 		scBox viewport.Model
 
 		// 弹幕
-		messages    []string
+		messages    *ds.ArrayRing[string]
 		messageBox  viewport.Model
 		senderStyle lipgloss.Style
 
 		// 礼物
-		gifts   []string
+		gifts   *ds.ArrayRing[string]
 		giftBox viewport.Model
 
 		// 打榜
@@ -70,7 +71,7 @@ func NewApp(cookie string, roomId int64) *App {
 		cookie = config.Config.Cookie
 	}
 	if roomId == 0 {
-		roomId = config.Config.RoomId
+		roomId = config.Config.RoomID
 	}
 	initOnce.Do(func() {
 		var err error
@@ -119,9 +120,12 @@ func NewApp(cookie string, roomId int64) *App {
 
 	return &App{
 		roomInfo:    roomInfo,
+		messages:    ds.NewArrayRingWithSize[string](config.Config.History.Danmaku),
 		messageBox:  messageBox,
+		sc:          ds.NewArrayRingWithSize[string](config.Config.History.SC),
 		scBox:       scBox,
 		rankBox:     rankBox,
+		gifts:       ds.NewArrayRingWithSize[string](config.Config.History.Gift),
 		giftBox:     giftBox,
 		interInfo:   interInfo,
 		inputArea:   inputArea,
@@ -183,10 +187,10 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.giftBox.Height = topHeight
 		m.rankBox.Height = m.messageBox.Height - topHeight
 
-		if len(m.messages) > 0 {
+		if m.messages.Len() > 0 {
 			// Wrap content before setting it.
-			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
-			m.scBox.SetContent(lipgloss.NewStyle().Width(m.scBox.Width).Render(strings.Join(m.sc, "\n")))
+			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
+			m.scBox.SetContent(lipgloss.NewStyle().Width(m.scBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
 		}
 		m.messageBox.GotoBottom()
 		m.scBox.GotoBottom()
@@ -198,8 +202,8 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			message := m.inputArea.Value()
 			if len(message) > 0 {
 				if err := cli.SendMsg(message); err != nil {
-					m.messages = append(m.messages, m.senderStyle.Render("system: ")+"消息发送失败")
-					m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
+					m.messages.Push(m.senderStyle.Render("system: ") + "消息发送失败")
+					m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 					m.messageBox.GotoBottom()
 				}
 				m.inputArea.Reset()
@@ -208,18 +212,18 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case *model.Danmaku:
 		switch msg.Type {
 		case "SEND_GIFT":
-			m.gifts = append(m.gifts, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
-			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts, "\n")))
+			m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
+			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts.Values(), "\n")))
 			m.giftBox.GotoBottom()
 		case "INTERACT_WORD":
 			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
-			m.sc = append(m.sc, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
-			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
+			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
+			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 			m.scBox.GotoBottom()
 		default:
-			m.messages = append(m.messages, fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
-			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages, "\n")))
+			m.messages.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
+			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 			m.messageBox.GotoBottom()
 		}
 		cmds = append(cmds, listenDanmaku())
