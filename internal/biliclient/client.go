@@ -22,7 +22,7 @@ import (
 )
 
 type Client struct {
-	roomId uint32
+	roomID uint32
 	cli    *biligo.BiliClient
 	conn   *websocket.Conn
 
@@ -38,7 +38,7 @@ type Client struct {
 	cf  context.CancelFunc
 }
 
-func NewClient(cookie string, roomId uint32) (c *Client, err error) {
+func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 	cookies, err := parseCookie(cookie)
 	if err != nil {
 		return
@@ -56,7 +56,7 @@ func NewClient(cookie string, roomId uint32) (c *Client, err error) {
 
 	ctx, cf := context.WithCancel(context.Background())
 	c = &Client{
-		roomId:     roomId,
+		roomID:     roomID,
 		cli:        cli,
 		cookie:     cookie,
 		cookies:    cookies,
@@ -65,7 +65,7 @@ func NewClient(cookie string, roomId uint32) (c *Client, err error) {
 		msgCh:      make(chan *model.Danmaku, 1024),
 		roomInfoCh: make(chan *model.RoomInfo, 8),
 	}
-	if err = c.connect(roomId); err != nil {
+	if err = c.connect(); err != nil {
 		return
 	}
 
@@ -101,14 +101,14 @@ func (c *Client) Receive() (msgCh <-chan *model.Danmaku, roomInfoCh <-chan *mode
 }
 
 func (c *Client) SendMsg(msg string) error {
-	return c.cli.LiveSendDanmaku(int64(c.roomId), 16777215, 25, 1, msg, 0)
+	return c.cli.LiveSendDanmaku(int64(c.roomID), 16777215, 25, 1, msg, 0)
 }
 
-func (c *Client) connect(roomId uint32) error {
+func (c *Client) connect() error {
 	header := http.Header{
 		"Cookie":     []string{c.cookie},
 		"Origin":     []string{"https://live.bilibili.com"},
-		"User-Agent": []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"},
+		"User-Agent": []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"},
 	}
 	header.Set("Accept", "*/*")
 	header.Set("Accept-Language", "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2")
@@ -127,51 +127,28 @@ func (c *Client) connect(roomId uint32) error {
 		c.uid = uint32(gjson.GetBytes(resp.Body, "data.mid").Int())
 	}
 
-	// FIX: -352 code
-	resp, err := httpx.Getx(
-		c.ctx,
-		"https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo",
-		httpx.WithHeader(header),
-		httpx.WithPayload(map[string]any{
-			"id":   roomId,
-			"type": 0,
-		}),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to get token, err: %v", err)
-	}
-	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
-		return fmt.Errorf("failed to get token, status: %v", resp.Code)
-	}
-
-	if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
-		return fmt.Errorf("failed to get token, code: %v", code)
-	}
-
-	os.WriteFile("room.json", resp.Body, os.ModePerm)
-
 	var (
 		hsInfo = handShakeInfo{
 			UID:      c.uid,
-			Roomid:   uint32(roomId),
+			Roomid:   c.roomID,
 			Protover: 2,
 			Platform: "web",
 			Type:     2,
 			Buvid:    c.cookies["buvid3"],
-			Key:      gjson.GetBytes(resp.Body, "data.token").String(),
 		}
-		hostList []string
+		hosts []string
 	)
-	gjson.GetBytes(resp.Body, "data.host_list").ForEach(func(key, value gjson.Result) bool {
-		hostList = append(hostList, value.Get("host").String())
-		return true
-	})
 
-	if len(hostList) == 0 {
+	hosts, err := c.getRoomStreamAddr()
+	if err != nil {
+		hosts = []string{"broadcastlv.chat.bilibili.com"}
+	}
+
+	if len(hosts) == 0 {
 		return errors.New("failed to get wss host")
 	}
 
-	for _, h := range hostList {
+	for _, h := range hosts {
 		c.conn, _, err = websocket.DefaultDialer.Dial(fmt.Sprintf("wss://%s/sub", h), header)
 		if err == nil {
 			break
@@ -277,7 +254,7 @@ func (c *Client) handlerMsg() {
 func (c *Client) syncRoomInfo() {
 	roomInfo := new(model.RoomInfo)
 
-	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/room/v1/room/get_info", httpx.WithPayload(map[string]any{"room_id": c.roomId}))
+	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/room/v1/room/get_info", httpx.WithPayload(map[string]any{"room_id": c.roomID}))
 	if err != nil {
 		logx.Errorf("get room information, err: %v", err)
 		return
@@ -287,7 +264,7 @@ func (c *Client) syncRoomInfo() {
 		return
 	}
 
-	roomInfo.RoomId = int(c.roomId)
+	roomInfo.RoomId = int(c.roomID)
 	roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
 	roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
 	roomInfo.AreaName = gjson.Get(string(resp.Body), "data.area_name").String()
@@ -303,7 +280,7 @@ func (c *Client) syncRoomInfo() {
 
 	resp, err = httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{
 		"ruid":     roomInfo.Uid,
-		"roomId":   c.roomId,
+		"roomId":   c.roomID,
 		"page":     1,
 		"pageSize": 50,
 	}))
@@ -351,7 +328,7 @@ func (c *Client) sendPackage(ver uint16, typeID uint32, param uint32, data []byt
 
 func (c *Client) getHistoryDanmaku() {
 	c.history.Do(func() {
-		resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory", httpx.WithPayload(map[string]any{"roomid": c.roomId}))
+		resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory", httpx.WithPayload(map[string]any{"roomid": c.roomID}))
 		if err != nil {
 			logx.Errorf("getHistoryDanmaku, err: %v", err)
 			return
@@ -409,4 +386,44 @@ func (c *Client) connHeartBeat() {
 			}
 		}
 	}
+}
+
+func (c *Client) getRoomStreamAddr() (hosts []string, err error) {
+	header := http.Header{
+		"Cookie":     []string{c.cookie},
+		"Origin":     []string{"https://live.bilibili.com"},
+		"User-Agent": []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"},
+	}
+	header.Set("Accept", "*/*")
+	header.Set("Accept-Language", "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2")
+
+	resp, err := httpx.Getx(
+		c.ctx,
+		"https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo",
+		httpx.WithHeader(header),
+		httpx.WithPayload(map[string]any{
+			"id":   c.roomID,
+			"type": 0,
+		}),
+	)
+	if err != nil {
+		err = fmt.Errorf("failed to get token, err: %v", err)
+		return
+	}
+	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
+		err = fmt.Errorf("failed to get token, status: %v", resp.Code)
+		return
+	}
+
+	if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
+		err = fmt.Errorf("failed to get token, code: %v", code)
+		return
+	}
+
+	// Key:      gjson.GetBytes(resp.Body, "data.token").String(),
+	gjson.GetBytes(resp.Body, "data.host_list").ForEach(func(key, value gjson.Result) bool {
+		hosts = append(hosts, value.Get("host").String())
+		return true
+	})
+	return
 }
