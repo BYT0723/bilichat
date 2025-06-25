@@ -26,9 +26,11 @@ type Client struct {
 	cli    *biligo.BiliClient
 	conn   *websocket.Conn
 
-	cookie  string
-	cookies map[string]string
-	uid     uint32
+	cookie    string
+	cookies   map[string]string
+	uid       uint32
+	wbiImgURL string
+	wbiSubURL string
 
 	history    sync.Once
 	msgCh      chan *model.Danmaku
@@ -124,24 +126,27 @@ func (c *Client) connect() error {
 		if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
 			return fmt.Errorf("failed to get user_id, code: %v", code)
 		}
-		c.uid = uint32(gjson.GetBytes(resp.Body, "data.mid").Int())
+		if wbi := gjson.GetBytes(resp.Body, "data.wbi_img"); wbi.Exists() {
+			c.wbiImgURL = wbi.Get("img_url").String()
+			c.wbiSubURL = wbi.Get("sub_url").String()
+		} else {
+			c.wbiImgURL = "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"
+			c.wbiSubURL = "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"
+		}
 	}
 
-	var (
-		hsInfo = handShakeInfo{
-			UID:      c.uid,
-			Roomid:   c.roomID,
-			Protover: 2,
-			Platform: "web",
-			Type:     2,
-			Buvid:    c.cookies["buvid3"],
-		}
-		hosts []string
-	)
-
-	hosts, err := c.getRoomStreamAddr()
+	hosts, token, err := c.getRoomStreamAddr()
 	if err != nil {
-		hosts = []string{"broadcastlv.chat.bilibili.com"}
+		return err
+	}
+
+	hsInfo := handShakeInfo{
+		UID:      c.uid,
+		Roomid:   c.roomID,
+		Protover: 3,
+		Platform: "web",
+		Type:     2,
+		Key:      token,
 	}
 
 	if len(hosts) == 0 {
@@ -184,7 +189,7 @@ func (c *Client) handlerMsg() {
 
 			version := binary.BigEndian.Uint16(rawMsg[6:8])
 			if len(rawMsg) >= 8 && version == 2 {
-				for _, msg := range splitMsg(zlibUnCompress(rawMsg[16:])) {
+				for _, msg := range splitMsg(brotliDecode(rawMsg[16:])) {
 					var (
 						body = gjson.ParseBytes(msg[16:])
 						dmk  = &model.Danmaku{}
@@ -388,23 +393,30 @@ func (c *Client) connHeartBeat() {
 	}
 }
 
-func (c *Client) getRoomStreamAddr() (hosts []string, err error) {
-	header := http.Header{
-		"Cookie":     []string{c.cookie},
-		"Origin":     []string{"https://live.bilibili.com"},
-		"User-Agent": []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"},
-	}
-	header.Set("Accept", "*/*")
-	header.Set("Accept-Language", "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2")
+func (c *Client) getRoomStreamAddr() (hosts []string, token string, err error) {
+	var (
+		header = http.Header{
+			"Cookie":          []string{c.cookie},
+			"Origin":          []string{"https://live.bilibili.com"},
+			"User-Agent":      []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"},
+			"Referer":         []string{fmt.Sprintf("https://live.bilibili.com/%d", c.roomID)},
+			"Accept":          []string{"*/*"},
+			"Accept-Language": []string{"zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"},
+		}
+		params = map[string]any{
+			"id":           c.roomID,
+			"type":         0,
+			"wts":          time.Now().Unix(),
+			"web_location": "444.8",
+		}
+	)
+	params["w_rid"] = EncodeWbi(params, c.wbiImgURL, c.wbiSubURL)
 
 	resp, err := httpx.Getx(
 		c.ctx,
 		"https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo",
 		httpx.WithHeader(header),
-		httpx.WithPayload(map[string]any{
-			"id":   c.roomID,
-			"type": 0,
-		}),
+		httpx.WithPayload(params),
 	)
 	if err != nil {
 		err = fmt.Errorf("failed to get token, err: %v", err)
@@ -420,7 +432,7 @@ func (c *Client) getRoomStreamAddr() (hosts []string, err error) {
 		return
 	}
 
-	// Key:      gjson.GetBytes(resp.Body, "data.token").String(),
+	token = gjson.GetBytes(resp.Body, "data.token").String()
 	gjson.GetBytes(resp.Body, "data.host_list").ForEach(func(key, value gjson.Result) bool {
 		hosts = append(hosts, value.Get("host").String())
 		return true
