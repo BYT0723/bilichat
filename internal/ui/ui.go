@@ -219,7 +219,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
 			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
-			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
+			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
 			m.scBox.GotoBottom()
 		default:
 			m.messages.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
