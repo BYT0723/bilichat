@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BYT0723/bilichat/internal/model"
@@ -133,20 +134,12 @@ func (c *Client) connect() error {
 			c.wbiImgURL = "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"
 			c.wbiSubURL = "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"
 		}
+		c.uid = uint32(gjson.GetBytes(resp.Body, "data.mid").Int())
 	}
 
 	hosts, token, err := c.getRoomStreamAddr()
 	if err != nil {
 		return err
-	}
-
-	hsInfo := handShakeInfo{
-		UID:      c.uid,
-		Roomid:   c.roomID,
-		Protover: 3,
-		Platform: "web",
-		Type:     2,
-		Key:      token,
 	}
 
 	if len(hosts) == 0 {
@@ -162,16 +155,11 @@ func (c *Client) connect() error {
 	if c.conn == nil {
 		return fmt.Errorf("websocket connect err: %v", err)
 	}
-	body, err := json.Marshal(hsInfo)
-	if err != nil {
+	if err := c.sendAuth(token); err != nil {
 		return err
 	}
-
-	err = c.sendPackage(1, 7, 1, body)
-	if err == nil {
-		go c.connHeartBeat()
-	}
-	return err
+	go c.connHeartBeat()
+	return nil
 }
 
 // fuck 每次启动总容易失败panic
@@ -189,7 +177,7 @@ func (c *Client) handlerMsg() {
 
 			version := binary.BigEndian.Uint16(rawMsg[6:8])
 			if len(rawMsg) >= 8 && version == 2 {
-				for _, msg := range splitMsg(brotliDecode(rawMsg[16:])) {
+				for _, msg := range splitMsg(zlibUnCompress(rawMsg[16:])) {
 					var (
 						body = gjson.ParseBytes(msg[16:])
 						dmk  = &model.Danmaku{}
@@ -310,7 +298,9 @@ func (c *Client) syncRoomInfo() {
 	c.roomInfoCh <- roomInfo
 }
 
-func (c *Client) sendPackage(ver uint16, typeID uint32, param uint32, data []byte) (err error) {
+var pktSeq uint32
+
+func (c *Client) sendPackage(ver uint16, typeID uint32, data []byte) (err error) {
 	packetHead := new(bytes.Buffer)
 
 	for _, v := range []any{
@@ -318,16 +308,58 @@ func (c *Client) sendPackage(ver uint16, typeID uint32, param uint32, data []byt
 		uint16(16),
 		ver,
 		typeID,
-		param,
+		pktSeq,
 	} {
 		if err = binary.Write(packetHead, binary.BigEndian, v); err != nil {
 			return
 		}
 	}
 
+	atomic.AddUint32(&pktSeq, 1)
+
 	sendData := append(packetHead.Bytes(), data...)
 
 	err = c.conn.WriteMessage(websocket.BinaryMessage, sendData)
+	return
+}
+
+func (c *Client) sendAuth(token string) (err error) {
+	hsInfo := handShakeInfo{
+		UID:      c.uid,
+		Roomid:   c.roomID,
+		Protover: 2,
+		Platform: "web",
+		Type:     2,
+		Key:      token,
+		Buvid:    c.cookies["buvid3"],
+	}
+	body, err := json.Marshal(hsInfo)
+	if err != nil {
+		return err
+	}
+
+	if err = c.sendPackage(1, 7, body); err != nil {
+		return
+	}
+
+	_, rawMsg, err := c.conn.ReadMessage()
+	if err != nil {
+		return
+	}
+	if len(rawMsg) < 16 {
+		return errors.New("invalid auth response")
+	}
+	if code := binary.BigEndian.Uint32(rawMsg[8:12]); code != 8 {
+		return fmt.Errorf("invalid auth response op code: %v", code)
+	}
+
+	if code := gjson.GetBytes(rawMsg[16:], "code"); code.Exists() {
+		if code.Int() != 0 {
+			return fmt.Errorf("invalid auth response code: %v, resp: %s", code.Int(), rawMsg[16:])
+		}
+	} else {
+		return errors.New("invalid auth response, not found code")
+	}
 	return
 }
 
@@ -378,7 +410,7 @@ func (c *Client) videoHeartBeat() {
 func (c *Client) connHeartBeat() {
 	var (
 		ticker  = time.NewTicker(30 * time.Second)
-		payload = []byte("5b6f626a656374204f626a6563745d")
+		payload = []byte("[object Object]")
 	)
 
 	for {
@@ -386,7 +418,7 @@ func (c *Client) connHeartBeat() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.sendPackage(1, 2, 1, payload); err != nil {
+			if err := c.sendPackage(1, 2, payload); err != nil {
 				logx.Error("send conn heart beat, err: ", err)
 			}
 		}
@@ -434,7 +466,7 @@ func (c *Client) getRoomStreamAddr() (hosts []string, token string, err error) {
 
 	token = gjson.GetBytes(resp.Body, "data.token").String()
 	gjson.GetBytes(resp.Body, "data.host_list").ForEach(func(key, value gjson.Result) bool {
-		hosts = append(hosts, value.Get("host").String())
+		hosts = append(hosts, fmt.Sprintf("%s:%d", value.Get("host").String(), value.Get("wss_port").Int()))
 		return true
 	})
 	return
