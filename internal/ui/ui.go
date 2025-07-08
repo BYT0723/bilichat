@@ -40,16 +40,16 @@ type (
 		roomInfo viewport.Model
 
 		// sc 醒目留言
-		sc    *ds.ArrayRing[string]
+		sc    *ds.RingBuffer[string]
 		scBox viewport.Model
 
 		// 弹幕
-		messages    *ds.ArrayRing[string]
+		messages    *ds.RingBuffer[string]
 		messageBox  viewport.Model
 		senderStyle lipgloss.Style
 
 		// 礼物
-		gifts   *ds.ArrayRing[string]
+		gifts   *ds.RingBuffer[string]
 		giftBox viewport.Model
 
 		// 打榜
@@ -120,12 +120,12 @@ func NewApp(cookie string, roomId int64) *App {
 
 	return &App{
 		roomInfo:    roomInfo,
-		messages:    ds.NewArrayRingWithSize[string](config.Config.History.Danmaku),
+		messages:    ds.NewRingBufferWithSize[string](config.Config.History.Danmaku),
 		messageBox:  messageBox,
-		sc:          ds.NewArrayRingWithSize[string](config.Config.History.SC),
+		sc:          ds.NewRingBufferWithSize[string](config.Config.History.SC),
 		scBox:       scBox,
 		rankBox:     rankBox,
-		gifts:       ds.NewArrayRingWithSize[string](config.Config.History.Gift),
+		gifts:       ds.NewRingBufferWithSize[string](config.Config.History.Gift),
 		giftBox:     giftBox,
 		interInfo:   interInfo,
 		inputArea:   inputArea,
