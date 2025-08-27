@@ -3,6 +3,7 @@ package biliclient
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/iyear/biligo"
 	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 type Client struct {
@@ -216,6 +218,29 @@ func (c *Client) handlerMsg() {
 					case "INTERACT_WORD":
 						dmk.Author = body.Get("data.uname").String()
 						dmk.Content = "进入直播间"
+					case "INTERACT_WORD_V2":
+						// NOTE: 将data.pb 使用如下命令进行解析
+						// echo "$data.pb" | base64 -d | protoc --decode_raw
+						data, err := base64.StdEncoding.DecodeString(body.Get("data.pb").String())
+						if err != nil {
+							logx.Errorf("base64 decode INTERACT_WORD_V2 err: %v", err)
+							continue
+						}
+
+						for len(data) > 0 {
+							num, typ, n := protowire.ConsumeTag(data)
+							if n < 0 || n > len(data) {
+								break
+							}
+							data = data[n:]
+
+							if num == 2 && typ == protowire.BytesType {
+								username, _ := protowire.ConsumeString(data)
+								dmk.Author = username
+								dmk.Content = "进入直播间"
+								data = data[len(data):]
+							}
+						}
 					case "SEND_GIFT":
 						dmk.Author = body.Get("data.uname").String()
 						dmk.Content = fmt.Sprintf(

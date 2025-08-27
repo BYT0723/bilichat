@@ -217,6 +217,8 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.giftBox.GotoBottom()
 		case "INTERACT_WORD":
 			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
+		case "INTERACT_WORD_V2":
+			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
 			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
 			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
