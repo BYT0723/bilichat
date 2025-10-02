@@ -46,7 +46,7 @@ type Client struct {
 func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 	cookies, err := parseCookie(cookie)
 	if err != nil {
-		return
+		return c, err
 	}
 
 	cli, err := biligo.NewBiliClient(&biligo.BiliSetting{Auth: &biligo.CookieAuth{
@@ -56,7 +56,7 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 		BiliJCT:         cookies["bili_jct"],
 	}, DebugMode: false})
 	if err != nil {
-		return
+		return c, err
 	}
 
 	ctx, cf := context.WithCancel(context.Background())
@@ -71,7 +71,7 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 		roomInfoCh: make(chan *model.RoomInfo, 8),
 	}
 	if err = c.connect(); err != nil {
-		return
+		return c, err
 	}
 
 	// 获取房间历史弹幕
@@ -92,7 +92,7 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 
 	go c.handlerMsg()
 	go c.videoHeartBeat()
-	return
+	return c, err
 }
 
 func (c *Client) Stop() {
@@ -194,6 +194,12 @@ func (c *Client) handlerMsg() {
 					case "DANMU_MSG":
 						dmk.Author = body.Get("info.2.1").String()
 						dmk.Content = body.Get("info.1").String()
+						if medal := body.Get("info.0.15.user.medal"); medal.IsObject() {
+							dmk.Medal = &model.Medal{
+								Level: int(medal.Get("level").Int()),
+								Name:  medal.Get("name").String(),
+							}
+						}
 					case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
 						dmk.Author = fmt.Sprintf("%s [¥ %d]",
 							body.Get("data.user_info.uname").String(),
@@ -207,6 +213,14 @@ func (c *Client) handlerMsg() {
 							body.Get("data.action").String(),
 							body.Get("data.combo_num").Int(),
 							body.Get("data.gift_name").String(),
+						)
+					case "SEND_GIFT":
+						dmk.Author = body.Get("data.uname").String()
+						dmk.Content = fmt.Sprintf(
+							"%s %d * %s",
+							body.Get("data.action").String(),
+							body.Get("data.num").Int(),
+							body.Get("data.giftName").String(),
 						)
 					case "GUARD_BUY":
 						dmk.Author = body.Get("data.username").String()
@@ -241,14 +255,12 @@ func (c *Client) handlerMsg() {
 								data = data[len(data):]
 							}
 						}
-					case "SEND_GIFT":
-						dmk.Author = body.Get("data.uname").String()
-						dmk.Content = fmt.Sprintf(
-							"%s %d * %s",
-							body.Get("data.action").String(),
-							body.Get("data.num").Int(),
-							body.Get("data.giftName").String(),
-						)
+					case "WATCHED_CHANGE":
+						dmk.Content = body.Get("data.text_large").String()
+					case "ONLINE_RANK_COUNT":
+						dmk.Content = body.Get("data.online_count_text").String()
+					case "LIKE_INFO_V3_UPDATE":
+						dmk.Content = body.Get("data.click_count").String()
 					default: // "LIVE" "ACTIVITY_BANNER_UPDATE_V2" "ONLINE_RANK_COUNT" "ONLINE_RANK_TOP3" "ONLINE_RANK_V2" "PANEL" "PREPARING" "WIDGET_BANNER" "LIVE_INTERACTIVE_GAME"
 						continue
 					}
@@ -287,7 +299,6 @@ func (c *Client) syncRoomInfo() {
 	roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
 	roomInfo.AreaName = gjson.Get(string(resp.Body), "data.area_name").String()
 	roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
-	roomInfo.Online = gjson.Get(string(resp.Body), "data.online").Int()
 	roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
 	if _time, err := time.ParseInLocation(time.DateTime, gjson.Get(string(resp.Body), "data.live_time").String(), time.Local); err == nil {
 		dur := time.Since(_time)
@@ -336,7 +347,7 @@ func (c *Client) sendPackage(ver uint16, typeID uint32, data []byte) (err error)
 		pktSeq,
 	} {
 		if err = binary.Write(packetHead, binary.BigEndian, v); err != nil {
-			return
+			return err
 		}
 	}
 
@@ -345,7 +356,7 @@ func (c *Client) sendPackage(ver uint16, typeID uint32, data []byte) (err error)
 	sendData := append(packetHead.Bytes(), data...)
 
 	err = c.conn.WriteMessage(websocket.BinaryMessage, sendData)
-	return
+	return err
 }
 
 func (c *Client) sendAuth(token string) (err error) {
@@ -364,12 +375,12 @@ func (c *Client) sendAuth(token string) (err error) {
 	}
 
 	if err = c.sendPackage(1, 7, body); err != nil {
-		return
+		return err
 	}
 
 	_, rawMsg, err := c.conn.ReadMessage()
 	if err != nil {
-		return
+		return err
 	}
 	if len(rawMsg) < 16 {
 		return errors.New("invalid auth response")
@@ -385,7 +396,7 @@ func (c *Client) sendAuth(token string) (err error) {
 	} else {
 		return errors.New("invalid auth response, not found code")
 	}
-	return
+	return err
 }
 
 func (c *Client) getHistoryDanmaku() {
@@ -477,16 +488,16 @@ func (c *Client) getRoomStreamAddr() (hosts []string, token string, err error) {
 	)
 	if err != nil {
 		err = fmt.Errorf("failed to get token, err: %v", err)
-		return
+		return hosts, token, err
 	}
 	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
 		err = fmt.Errorf("failed to get token, status: %v", resp.Code)
-		return
+		return hosts, token, err
 	}
 
 	if code := gjson.GetBytes(resp.Body, "code").Int(); code != 0 {
 		err = fmt.Errorf("failed to get token, code: %v", code)
-		return
+		return hosts, token, err
 	}
 
 	token = gjson.GetBytes(resp.Body, "data.token").String()
@@ -494,5 +505,5 @@ func (c *Client) getRoomStreamAddr() (hosts []string, token string, err error) {
 		hosts = append(hosts, fmt.Sprintf("%s:%d", value.Get("host").String(), value.Get("wss_port").Int()))
 		return true
 	})
-	return
+	return hosts, token, err
 }

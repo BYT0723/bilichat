@@ -24,11 +24,20 @@ var (
 	roomInfoCh <-chan *model.RoomInfo
 	initOnce   sync.Once
 
-	roomInfoHomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff"))
-	roomInfoZoneStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
-	roomInfoUserStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fafff"))
-	roomInfoStarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
-	roomInfoUptimeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999"))
+	roomInfoHomeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff"))
+	roomInfoZoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	roomInfoOnlineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fafff"))
+	roomInfoWatchedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
+	roomInfoUptimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999"))
+
+	medalStyle = lipgloss.NewStyle().Background(lipgloss.Color("#3FB4F6")).Foreground(lipgloss.Color("#000000"))
+
+	rankIcons = []string{"🥇", "🥈", "🥉"}
+	rankStyle = []lipgloss.Style{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#C0C0C0")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#CD7F32")),
+	}
 
 	borderStyle = lipgloss.RoundedBorder()
 )
@@ -37,7 +46,8 @@ type (
 	errMsg error
 	App    struct {
 		// 房间信息
-		roomInfo viewport.Model
+		roomInfoBox viewport.Model
+		roomInfo    model.RoomInfo
 
 		// sc 醒目留言
 		sc    *ds.RingBuffer[string]
@@ -119,7 +129,7 @@ func NewApp(cookie string, roomId int64) *App {
 	interInfo.KeyMap = viewport.KeyMap{}
 
 	return &App{
-		roomInfo:    roomInfo,
+		roomInfoBox: roomInfo,
 		messages:    ds.NewRingBufferWithSize[string](config.Config.History.Danmaku),
 		messageBox:  messageBox,
 		sc:          ds.NewRingBufferWithSize[string](config.Config.History.SC),
@@ -130,7 +140,7 @@ func NewApp(cookie string, roomId int64) *App {
 		interInfo:   interInfo,
 		inputArea:   inputArea,
 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		timeStyle:   lipgloss.NewStyle().Foreground(lipgloss.Color("#883388")),
+		timeStyle:   lipgloss.NewStyle().Foreground(lipgloss.Color("#545c7e")),
 		err:         nil,
 	}
 }
@@ -140,6 +150,19 @@ func (m *App) Init() tea.Cmd {
 		textarea.Blink,
 		listenDanmaku(),
 		listenRoomInfo(),
+	)
+}
+
+func (m *App) refreshRoomInfo() {
+	m.roomInfoBox.SetContent(
+		fmt.Sprintf("%s %s | %s %s | %s %s | %s %s | %s %v",
+			roomInfoHomeStyle.Render(" ")+m.roomInfo.Title,
+			roomInfoZoneStyle.Render("["+m.roomInfo.ParentAreaName+" "+m.roomInfo.AreaName+"]"),
+			roomInfoWatchedStyle.Render(" "), m.roomInfo.Watched,
+			roomInfoOnlineStyle.Render(" "), m.roomInfo.Liked,
+			roomInfoOnlineStyle.Render(""), m.roomInfo.Online,
+			roomInfoUptimeStyle.Render(" "), FormatDurationZH(m.roomInfo.Uptime/time.Minute*time.Minute),
+		),
 	)
 }
 
@@ -157,7 +180,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	m.roomInfo, cmd = m.roomInfo.Update(msg)
+	m.roomInfoBox, cmd = m.roomInfoBox.Update(msg)
 	if cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -172,20 +195,26 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.roomInfo.Width = msg.Width
-		rightWidth := min(40, msg.Width/2)
-		m.messageBox.Width = (msg.Width - rightWidth) / 2
-		m.scBox.Width = m.messageBox.Width
-		m.rankBox.Width = rightWidth
-		m.giftBox.Width = rightWidth
-		m.inputArea.SetWidth(msg.Width)
-		m.interInfo.Width = msg.Width
-		m.messageBox.Height = msg.Height - m.inputArea.Height() - m.roomInfo.Height - m.interInfo.Height
-		m.scBox.Height = m.messageBox.Height
+		m.roomInfoBox.Width = msg.Width
 
+		rightWidth := min(40, msg.Width/2)
 		topHeight := min(10, msg.Height/2)
-		m.giftBox.Height = topHeight
-		m.rankBox.Height = m.messageBox.Height - topHeight
+
+		m.inputArea.SetWidth(msg.Width)
+
+		m.interInfo.Width = msg.Width
+
+		m.messageBox.Width = (msg.Width - 2*rightWidth)
+		m.messageBox.Height = msg.Height - m.inputArea.Height() - m.roomInfoBox.Height - m.interInfo.Height
+
+		m.scBox.Width = rightWidth
+		m.scBox.Height = topHeight
+
+		m.giftBox.Width = rightWidth
+		m.giftBox.Height = m.messageBox.Height - topHeight
+
+		m.rankBox.Width = rightWidth
+		m.rankBox.Height = m.messageBox.Height
 
 		if m.messages.Len() > 0 {
 			// Wrap content before setting it.
@@ -223,32 +252,45 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
 			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
 			m.scBox.GotoBottom()
+		case "WATCHED_CHANGE":
+			m.roomInfo.Watched = msg.Content
+			m.refreshRoomInfo()
+		case "ONLINE_RANK_COUNT":
+			m.roomInfo.Online = msg.Content
+			m.refreshRoomInfo()
+		case "LIKE_INFO_V3_UPDATE":
+			m.roomInfo.Liked = msg.Content
+			m.refreshRoomInfo()
 		default:
-			m.messages.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
+			var medal string
+			if msg.Medal != nil {
+				medal = medalStyle.Render(fmt.Sprintf("%s%2d", msg.Medal.Name, msg.Medal.Level)) + " "
+			}
+			m.messages.Push(fmt.Sprintf("%s %s%s %s",
+				m.timeStyle.Render(msg.T.Format("[15:04]")),
+				medal,
+				m.senderStyle.Render(msg.Author+":"),
+				msg.Content,
+			))
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 			m.messageBox.GotoBottom()
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
-		m.roomInfo.SetContent(
-			fmt.Sprintf("%s %s | %s %d | %s %d | %s %v",
-				roomInfoHomeStyle.Render(" ")+msg.Title,
-				roomInfoZoneStyle.Render("["+msg.ParentAreaName+" "+msg.AreaName+"]"),
-				roomInfoUserStyle.Render(""), msg.Online,
-				roomInfoStarStyle.Render(""), msg.Attention,
-				roomInfoUptimeStyle.Render(""), FormatDurationZH(msg.Uptime/time.Minute*time.Minute),
-			),
-		)
+		m.roomInfo.Title = msg.Title
+		m.roomInfo.ParentAreaName = msg.ParentAreaName
+		m.roomInfo.AreaName = msg.AreaName
+		m.roomInfo.Uptime = msg.Uptime
+		m.refreshRoomInfo()
 
 		users := make([]string, len(msg.OnlineRankUsers))
 		for i, u := range msg.OnlineRankUsers {
 			var (
-				icons = []string{"🥇", "🥈", "🥉"}
-				t     = " "
+				t     = "  "
 				score = strconv.Itoa(int(u.Score))
 			)
-			if int(u.Rank) <= len(icons) {
-				t = icons[u.Rank-1]
+			if int(u.Rank) <= len(rankIcons) {
+				t = rankStyle[u.Rank-1].Render(rankIcons[u.Rank-1])
 			}
 			info := fmt.Sprintf("%s %s", t, u.Name)
 
@@ -272,14 +314,14 @@ func (m *App) View() string {
 	center := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.messageBox.View(),
-		m.scBox.View(),
-		lipgloss.JoinVertical(lipgloss.Top, m.giftBox.View(), m.rankBox.View()),
+		lipgloss.JoinVertical(lipgloss.Top, m.scBox.View(), m.giftBox.View()),
+		m.rankBox.View(),
 	)
 
 	// 底部是输入框
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.roomInfo.View(),
+		m.roomInfoBox.View(),
 		center,
 		m.interInfo.View(),
 		m.inputArea.View(),
