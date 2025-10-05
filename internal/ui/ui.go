@@ -31,7 +31,8 @@ var (
 	roomInfoWatchedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
 	roomInfoUptimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#999999"))
 
-	medalStyle = lipgloss.NewStyle().Background(lipgloss.Color("#3FB4F6")).Foreground(lipgloss.Color("#000000"))
+	medalStyle      = lipgloss.NewStyle().Background(lipgloss.Color("#3FB4F6")).Foreground(lipgloss.Color("#000000"))
+	medalLevelStyle = lipgloss.NewStyle().Background(lipgloss.Color("#3FB4F6")).Foreground(lipgloss.Color("#000000")).Bold(true)
 
 	rankIcons = []string{"🥇", "🥈", "🥉"}
 	rankStyle = []lipgloss.Style{
@@ -93,16 +94,16 @@ type (
 	}
 )
 
-func NewApp(cookie string, roomId int64) *App {
+func NewApp(cookie string, roomID int64) *App {
 	if cookie == "" {
 		cookie = config.Config.Cookie
 	}
-	if roomId == 0 {
-		roomId = config.Config.RoomID
+	if roomID == 0 {
+		roomID = config.Config.RoomID
 	}
 	initOnce.Do(func() {
 		var err error
-		cli, err = biliclient.NewClient(cookie, uint32(roomId))
+		cli, err = biliclient.NewClient(cookie, uint32(roomID))
 		if err != nil {
 			panic(err)
 		}
@@ -239,8 +240,10 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 			m.scBox.SetContent(lipgloss.NewStyle().Width(m.scBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
 		}
-		m.messageBox.GotoBottom()
-		m.scBox.GotoBottom()
+		if m.mode == ModeInput {
+			m.messageBox.GotoBottom()
+			m.scBox.GotoBottom()
+		}
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
@@ -332,7 +335,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "SEND_GIFT":
 			m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts.Values(), "\n")))
-			m.giftBox.GotoBottom()
+			if m.mode == ModeInput {
+				m.giftBox.GotoBottom()
+			}
 		case "INTERACT_WORD":
 			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 		case "INTERACT_WORD_V2":
@@ -340,7 +345,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
 			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
 			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
-			m.scBox.GotoBottom()
+			if m.mode == ModeInput {
+				m.scBox.GotoBottom()
+			}
 		case "WATCHED_CHANGE":
 			m.roomInfo.Watched = msg.Content
 			m.refreshRoomInfo()
@@ -353,7 +360,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			var medal string
 			if msg.Medal != nil {
-				medal = medalStyle.Render(fmt.Sprintf("%s%2d", msg.Medal.Name, msg.Medal.Level)) + " "
+				medal = medalStyle.Render(msg.Medal.Name+" ") + medalLevelStyle.Render(fmt.Sprintf("%2d", msg.Medal.Level)) + " "
 			}
 			m.messages.Push(fmt.Sprintf("%s %s%s %s",
 				m.timeStyle.Render(msg.T.Format("[15:04]")),
@@ -362,7 +369,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.Content,
 			))
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
-			m.messageBox.GotoBottom()
+			if m.mode == ModeInput {
+				m.messageBox.GotoBottom()
+			}
 		}
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
