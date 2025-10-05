@@ -11,6 +11,7 @@ import (
 	"github.com/BYT0723/bilichat/internal/config"
 	"github.com/BYT0723/bilichat/internal/model"
 	"github.com/BYT0723/go-tools/ds"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -39,7 +40,17 @@ var (
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#CD7F32")),
 	}
 
-	borderStyle = lipgloss.RoundedBorder()
+	defaultKeyMap = viewport.KeyMap{
+		Up:    key.NewBinding(key.WithKeys("k")),
+		Down:  key.NewBinding(key.WithKeys("j")),
+		Left:  key.NewBinding(key.WithKeys("h")),
+		Right: key.NewBinding(key.WithKeys("l")),
+	}
+
+	normalBorderStyle = lipgloss.RoundedBorder()
+	activeBorderStyle = lipgloss.DoubleBorder()
+
+	modelIndexes = []string{"danmaku", "sc", "gift", "rank"}
 )
 
 type (
@@ -73,6 +84,12 @@ type (
 
 		timeStyle lipgloss.Style
 		err       error
+
+		index int
+
+		// 当前模式
+		// 0 0 0 0 0 0 0 1		插入模式
+		mode Mode
 	}
 )
 
@@ -96,25 +113,23 @@ func NewApp(cookie string, roomId int64) *App {
 	roomInfo.KeyMap = viewport.KeyMap{}
 
 	messageBox := viewport.New(30, 5)
-	messageBox.KeyMap.Down.SetKeys("ctrl+n")
-	messageBox.KeyMap.Up.SetKeys("ctrl+p")
-	messageBox.Style = messageBox.Style.Border(borderStyle)
+	messageBox.KeyMap = defaultKeyMap
+	messageBox.Style = messageBox.Style.Border(normalBorderStyle)
 
 	scBox := viewport.New(30, 5)
-	scBox.KeyMap.Down.SetKeys("ctrl+n")
-	scBox.KeyMap.Up.SetKeys("ctrl+p")
-	scBox.Style = scBox.Style.Border(borderStyle)
+	scBox.KeyMap = viewport.KeyMap{}
+	scBox.Style = scBox.Style.Border(normalBorderStyle)
 
 	rankBox := viewport.New(30, 5)
 	rankBox.KeyMap = viewport.KeyMap{}
-	rankBox.Style = rankBox.Style.Border(borderStyle)
+	rankBox.Style = rankBox.Style.Border(normalBorderStyle)
 
 	giftBox := viewport.New(30, 5)
 	giftBox.KeyMap = viewport.KeyMap{}
-	giftBox.Style = rankBox.Style.Border(borderStyle)
+	giftBox.Style = rankBox.Style.Border(normalBorderStyle)
 
 	inputArea := textarea.New()
-	inputArea.Placeholder = "Send a message..."
+	inputArea.Placeholder = "say something..."
 	inputArea.Focus()
 	inputArea.Prompt = "┃ "
 	inputArea.CharLimit = 280
@@ -128,7 +143,7 @@ func NewApp(cookie string, roomId int64) *App {
 	interInfo := viewport.New(30, 1)
 	interInfo.KeyMap = viewport.KeyMap{}
 
-	return &App{
+	app := &App{
 		roomInfoBox: roomInfo,
 		messages:    ds.NewRingBufferWithSize[string](config.Config.History.Danmaku),
 		messageBox:  messageBox,
@@ -142,7 +157,10 @@ func NewApp(cookie string, roomId int64) *App {
 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
 		timeStyle:   lipgloss.NewStyle().Foreground(lipgloss.Color("#545c7e")),
 		err:         nil,
+		mode:        ModeInput,
 	}
+
+	return app
 }
 
 func (m *App) Init() tea.Cmd {
@@ -225,17 +243,88 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scBox.GotoBottom()
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
 			return m, tea.Quit
-		case tea.KeyEnter:
-			message := m.inputArea.Value()
-			if len(message) > 0 {
-				if err := cli.SendMsg(message); err != nil {
-					m.messages.Push(m.senderStyle.Render("system: ") + "消息发送失败")
-					m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
-					m.messageBox.GotoBottom()
+		case tea.KeyEsc:
+			if m.mode == ModeInput {
+				m.inputArea.Blur()
+				m.mode = ModeNormal
+			}
+		case tea.KeyCtrlI:
+			if m.mode == ModeNormal {
+				switch modelIndexes[m.index] {
+				case "danmaku":
+					m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
+					m.messageBox.KeyMap = viewport.KeyMap{}
+				case "sc":
+					m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
+					m.scBox.KeyMap = viewport.KeyMap{}
+				case "gift":
+					m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
+					m.giftBox.KeyMap = viewport.KeyMap{}
+				case "rank":
+					m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
+					m.rankBox.KeyMap = viewport.KeyMap{}
 				}
-				m.inputArea.Reset()
+				m.inputArea.Focus()
+				m.mode = ModeInput
+			}
+		case tea.KeyCtrlJ, tea.KeyCtrlK:
+			if m.mode == ModeNormal {
+				switch modelIndexes[m.index] {
+				case "danmaku":
+					m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
+					m.messageBox.KeyMap = viewport.KeyMap{}
+				case "sc":
+					m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
+					m.scBox.KeyMap = viewport.KeyMap{}
+				case "gift":
+					m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
+					m.giftBox.KeyMap = viewport.KeyMap{}
+				case "rank":
+					m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
+					m.rankBox.KeyMap = viewport.KeyMap{}
+				}
+				switch msg.Type {
+				case tea.KeyCtrlJ:
+					m.index = (m.index + 1) % len(modelIndexes)
+				case tea.KeyCtrlK:
+					m.index = (m.index - 1 + len(modelIndexes)) % len(modelIndexes)
+				}
+			}
+
+			if m.mode == ModeInput {
+				m.inputArea.Blur()
+				m.mode = ModeNormal
+			}
+
+			switch modelIndexes[m.index] {
+			case "danmaku":
+				m.messageBox.Style = m.messageBox.Style.Border(activeBorderStyle)
+				m.messageBox.KeyMap = defaultKeyMap
+			case "sc":
+				m.scBox.Style = m.scBox.Style.Border(activeBorderStyle)
+				m.scBox.KeyMap = defaultKeyMap
+			case "gift":
+				m.giftBox.Style = m.giftBox.Style.Border(activeBorderStyle)
+				m.giftBox.KeyMap = defaultKeyMap
+			case "rank":
+				m.rankBox.Style = m.rankBox.Style.Border(activeBorderStyle)
+				m.rankBox.KeyMap = defaultKeyMap
+			}
+
+		case tea.KeyEnter:
+			switch m.mode {
+			case ModeInput:
+				message := m.inputArea.Value()
+				if len(message) > 0 {
+					if err := cli.SendMsg(message); err != nil {
+						m.messages.Push(m.senderStyle.Render("system: ") + "消息发送失败")
+						m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
+						m.messageBox.GotoBottom()
+					}
+					m.inputArea.Reset()
+				}
 			}
 		}
 	case *model.Danmaku:
