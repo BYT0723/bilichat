@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/BYT0723/bilichat/internal/biliclient"
 	"github.com/BYT0723/bilichat/internal/config"
@@ -332,7 +333,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case *model.Danmaku:
 		switch msg.Type {
-		case "SEND_GIFT":
+		case "GUARD_BUY", "COMBO_SEND", "SEND_GIFT":
 			m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
 			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts.Values(), "\n")))
 			if m.mode == ModeInput {
@@ -362,11 +363,24 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Medal != nil {
 				medal = medalStyle.Render(msg.Medal.Name+" ") + medalLevelStyle.Render(fmt.Sprintf("%2d", msg.Medal.Level)) + " "
 			}
+			author := strings.Map(func(r rune) rune {
+				if unicode.IsPrint(r) {
+					return r
+				}
+				return -1
+			}, msg.Author)
+
+			content := strings.Map(func(r rune) rune {
+				if unicode.IsPrint(r) {
+					return r
+				}
+				return -1
+			}, msg.Content)
 			m.messages.Push(fmt.Sprintf("%s %s%s %s",
 				m.timeStyle.Render(msg.T.Format("[15:04]")),
 				medal,
-				m.senderStyle.Render(msg.Author+":"),
-				msg.Content,
+				m.senderStyle.Render(author+":"),
+				content,
 			))
 			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
 			if m.mode == ModeInput {
