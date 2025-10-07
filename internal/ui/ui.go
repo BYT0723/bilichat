@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/BYT0723/bilichat/internal/biliclient"
 	"github.com/BYT0723/bilichat/internal/config"
@@ -24,6 +23,7 @@ var (
 	cli        *biliclient.Client
 	danmakuCh  <-chan *model.Danmaku
 	roomInfoCh <-chan *model.RoomInfo
+	rankCh     <-chan []*model.OnlineRankUser
 	initOnce   sync.Once
 
 	roomInfoHomeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff"))
@@ -108,7 +108,7 @@ func NewApp(cookie string, roomID int64) *App {
 		if err != nil {
 			panic(err)
 		}
-		danmakuCh, roomInfoCh = cli.Receive()
+		danmakuCh, roomInfoCh, rankCh = cli.Receive()
 	})
 
 	roomInfo := viewport.New(30, 1)
@@ -170,14 +170,16 @@ func (m *App) Init() tea.Cmd {
 		textarea.Blink,
 		listenDanmaku(),
 		listenRoomInfo(),
+		listenRank(),
 	)
 }
 
 func (m *App) refreshRoomInfo() {
 	m.roomInfoBox.SetContent(
-		fmt.Sprintf("%s %s | %s %s | %s %s | %s %s | %s %v",
-			roomInfoHomeStyle.Render(" ")+m.roomInfo.Title,
+		fmt.Sprintf("%s %s %s | %s %s | %s %s | %s %s | %s %v",
+			roomInfoHomeStyle.Render("  ")+m.roomInfo.Title,
 			roomInfoZoneStyle.Render("["+m.roomInfo.ParentAreaName+" "+m.roomInfo.AreaName+"]"),
+			m.roomInfo.Uname,
 			roomInfoWatchedStyle.Render(" "), m.roomInfo.Watched,
 			roomInfoOnlineStyle.Render(" "), m.roomInfo.Liked,
 			roomInfoOnlineStyle.Render(""), m.roomInfo.Online,
@@ -363,19 +365,8 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Medal != nil {
 				medal = medalStyle.Render(msg.Medal.Name+" ") + medalLevelStyle.Render(fmt.Sprintf("%2d", msg.Medal.Level)) + " "
 			}
-			author := strings.Map(func(r rune) rune {
-				if unicode.IsPrint(r) {
-					return r
-				}
-				return -1
-			}, msg.Author)
-
-			content := strings.Map(func(r rune) rune {
-				if unicode.IsPrint(r) {
-					return r
-				}
-				return -1
-			}, msg.Content)
+			author := SanitizeViewportText(msg.Author)
+			content := SanitizeViewportText(msg.Content)
 			m.messages.Push(fmt.Sprintf("%s %s%s %s",
 				m.timeStyle.Render(msg.T.Format("[15:04]")),
 				medal,
@@ -390,13 +381,17 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, listenDanmaku())
 	case *model.RoomInfo:
 		m.roomInfo.Title = msg.Title
+		m.roomInfo.Uname = msg.Uname
 		m.roomInfo.ParentAreaName = msg.ParentAreaName
 		m.roomInfo.AreaName = msg.AreaName
 		m.roomInfo.Uptime = msg.Uptime
 		m.refreshRoomInfo()
 
-		users := make([]string, len(msg.OnlineRankUsers))
-		for i, u := range msg.OnlineRankUsers {
+		cmds = append(cmds, listenRoomInfo())
+
+	case []*model.OnlineRankUser:
+		users := make([]string, len(msg))
+		for i, u := range msg {
 			var (
 				t     = "  "
 				score = strconv.Itoa(int(u.Score))
@@ -412,8 +407,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.rankBox.SetContent(strings.Join(users, "\n"))
 
-		cmds = append(cmds, listenRoomInfo())
-	// We handle errors just like any other message
+		cmds = append(cmds, listenRank())
 	case errMsg:
 		m.err = msg
 		return m, nil
@@ -452,6 +446,15 @@ func listenDanmaku() tea.Cmd {
 func listenRoomInfo() tea.Cmd {
 	return func() tea.Msg {
 		if msg, ok := <-roomInfoCh; ok {
+			return msg
+		}
+		return nil
+	}
+}
+
+func listenRank() tea.Cmd {
+	return func() tea.Msg {
+		if msg, ok := <-rankCh; ok {
 			return msg
 		}
 		return nil

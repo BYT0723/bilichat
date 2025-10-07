@@ -25,9 +25,10 @@ import (
 )
 
 type Client struct {
-	roomID uint32
-	cli    *biligo.BiliClient
-	conn   *websocket.Conn
+	roomID  uint32
+	roomUID uint32
+	cli     *biligo.BiliClient
+	conn    *websocket.Conn
 
 	cookie    string
 	cookies   map[string]string
@@ -35,9 +36,10 @@ type Client struct {
 	wbiImgURL string
 	wbiSubURL string
 
-	history    sync.Once
-	msgCh      chan *model.Danmaku
-	roomInfoCh chan *model.RoomInfo
+	historyOnce sync.Once
+	msgCh       chan *model.Danmaku
+	roomInfoCh  chan *model.RoomInfo
+	rankCh      chan []*model.OnlineRankUser
 
 	ctx context.Context
 	cf  context.CancelFunc
@@ -69,6 +71,7 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 		cf:         cf,
 		msgCh:      make(chan *model.Danmaku, 1024),
 		roomInfoCh: make(chan *model.RoomInfo, 8),
+		rankCh:     make(chan []*model.OnlineRankUser, 8),
 	}
 	if err = c.connect(); err != nil {
 		return c, err
@@ -78,14 +81,22 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 	go c.getHistoryDanmaku()
 	// 定时获取房间信息
 	go func(ctx context.Context) {
-		ticker := time.NewTicker(30 * time.Second)
+		var (
+			roomInfoTicker = time.NewTicker(1 * time.Minute)
+			rankTicker     = time.NewTicker(30 * time.Second)
+		)
+
 		c.syncRoomInfo()
+		c.syncRank()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				c.syncRoomInfo()
+			case <-roomInfoTicker.C:
+				go c.syncRoomInfo()
+			case <-rankTicker.C:
+				go c.syncRank()
 			}
 		}
 	}(c.ctx)
@@ -101,8 +112,8 @@ func (c *Client) Stop() {
 	}
 }
 
-func (c *Client) Receive() (msgCh <-chan *model.Danmaku, roomInfoCh <-chan *model.RoomInfo) {
-	return c.msgCh, c.roomInfoCh
+func (c *Client) Receive() (msgCh <-chan *model.Danmaku, roomInfoCh <-chan *model.RoomInfo, rankInfo <-chan []*model.OnlineRankUser) {
+	return c.msgCh, c.roomInfoCh, c.rankCh
 }
 
 func (c *Client) SendMsg(msg string) error {
@@ -257,10 +268,10 @@ func (c *Client) handlerMsg() {
 						}
 					case "WATCHED_CHANGE":
 						dmk.Content = body.Get("data.text_large").String()
-					case "ONLINE_RANK_COUNT":
-						dmk.Content = body.Get("data.online_count_text").String()
 					case "LIKE_INFO_V3_UPDATE":
 						dmk.Content = body.Get("data.click_count").String()
+					case "ONLINE_RANK_COUNT":
+						dmk.Content = body.Get("data.online_count_text").String()
 					default: // "LIVE" "ACTIVITY_BANNER_UPDATE_V2" "ONLINE_RANK_COUNT" "ONLINE_RANK_TOP3" "ONLINE_RANK_V2" "PANEL" "PREPARING" "WIDGET_BANNER" "LIVE_INTERACTIVE_GAME"
 						continue
 					}
@@ -284,7 +295,10 @@ func (c *Client) handlerMsg() {
 func (c *Client) syncRoomInfo() {
 	roomInfo := new(model.RoomInfo)
 
-	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/room/v1/room/get_info", httpx.WithPayload(map[string]any{"room_id": c.roomID}))
+	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo", httpx.WithPayload(map[string]any{
+		"room_ids": c.roomID,
+		"req_biz":  "web_room_componet",
+	}))
 	if err != nil {
 		logx.Errorf("get room information, err: %v", err)
 		return
@@ -294,21 +308,30 @@ func (c *Client) syncRoomInfo() {
 		return
 	}
 
-	roomInfo.RoomId = int(c.roomID)
-	roomInfo.Uid = int(gjson.Get(string(resp.Body), "data.uid").Int())
-	roomInfo.Title = gjson.Get(string(resp.Body), "data.title").String()
-	roomInfo.AreaName = gjson.Get(string(resp.Body), "data.area_name").String()
-	roomInfo.ParentAreaName = gjson.Get(string(resp.Body), "data.parent_area_name").String()
+	info := gjson.GetBytes(resp.Body, fmt.Sprintf("data.by_room_ids.%d", c.roomID))
+
+	roomInfo.RoomID = int(c.roomID)
+	roomInfo.UID = int(info.Get("uid").Int())
+	c.roomUID = uint32(roomInfo.UID)
+	roomInfo.Uname = info.Get("uname").String()
+	roomInfo.Title = info.Get("title").String()
+	roomInfo.AreaName = info.Get("area_name").String()
+	roomInfo.ParentAreaName = info.Get("parent_area_name").String()
+	roomInfo.Attention = info.Get("attention").Int()
 	roomInfo.Attention = gjson.Get(string(resp.Body), "data.attention").Int()
-	if _time, err := time.ParseInLocation(time.DateTime, gjson.Get(string(resp.Body), "data.live_time").String(), time.Local); err == nil {
+	if _time, err := time.ParseInLocation(time.DateTime, info.Get("live_time").String(), time.Local); err == nil {
 		dur := time.Since(_time)
 		if dur > 0 {
 			roomInfo.Uptime = dur
 		}
 	}
 
-	resp, err = httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{
-		"ruid":     roomInfo.Uid,
+	c.roomInfoCh <- roomInfo
+}
+
+func (c *Client) syncRank() {
+	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank", httpx.WithPayload(map[string]any{
+		"ruid":     c.roomUID,
 		"roomId":   c.roomID,
 		"page":     1,
 		"pageSize": 50,
@@ -322,16 +345,20 @@ func (c *Client) syncRoomInfo() {
 		return
 	}
 
-	rawUsers := gjson.Get(string(resp.Body), "data.OnlineRankItem").Array()
+	var (
+		rawUsers = gjson.Get(string(resp.Body), "data.OnlineRankItem").Array()
+		rank     []*model.OnlineRankUser
+	)
 	for _, rawUser := range rawUsers {
 		user := model.OnlineRankUser{
 			Name:  rawUser.Get("name").String(),
 			Score: rawUser.Get("score").Int(),
 			Rank:  rawUser.Get("userRank").Int(),
 		}
-		roomInfo.OnlineRankUsers = append(roomInfo.OnlineRankUsers, user)
+		rank = append(rank, &user)
 	}
-	c.roomInfoCh <- roomInfo
+
+	c.rankCh <- rank
 }
 
 var pktSeq uint32
@@ -400,7 +427,7 @@ func (c *Client) sendAuth(token string) (err error) {
 }
 
 func (c *Client) getHistoryDanmaku() {
-	c.history.Do(func() {
+	c.historyOnce.Do(func() {
 		resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory", httpx.WithPayload(map[string]any{"roomid": c.roomID}))
 		if err != nil {
 			logx.Errorf("getHistoryDanmaku, err: %v", err)
