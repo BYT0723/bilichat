@@ -19,19 +19,10 @@ jobs:
         with:
           go-version: "stable"
 
-      - name: Install UPX
-        run: |
-          curl -LO https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
-          tar -xf upx-5.0.1-amd64_linux.tar.xz
-          sudo mv upx-5.0.1-amd64_linux/upx /usr/local/bin/
-          upx --version
-
-      - name: Build with Makefile
-        run: make build compress
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          files: build/*
+          version: latest
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
