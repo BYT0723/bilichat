@@ -2,3 +2,5 @@ logs
 config.json
 build
 danmaku
+# Added by goreleaser init:
+dist/
