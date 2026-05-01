@@ -1,4 +1,4 @@
-package biliclient
+package bilibili
 
 import (
 	"bytes"
@@ -11,11 +11,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/BYT0723/bilichat/internal/model"
+	"github.com/BYT0723/bilichat/internal/client"
 	"github.com/BYT0723/go-tools/logx"
 	"github.com/BYT0723/go-tools/transport/httpx"
 	"github.com/gorilla/websocket"
@@ -36,10 +35,7 @@ type Client struct {
 	wbiImgURL string
 	wbiSubURL string
 
-	historyOnce sync.Once
-	msgCh       chan *model.Danmaku
-	roomInfoCh  chan *model.RoomInfo
-	rankCh      chan []*model.OnlineRankUser
+	msgCh chan client.Message
 
 	ctx context.Context
 	cf  context.CancelFunc
@@ -61,26 +57,27 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 		return c, err
 	}
 
-	ctx, cf := context.WithCancel(context.Background())
 	c = &Client{
-		roomID:     roomID,
-		cli:        cli,
-		cookie:     cookie,
-		cookies:    cookies,
-		ctx:        ctx,
-		cf:         cf,
-		msgCh:      make(chan *model.Danmaku, 1024),
-		roomInfoCh: make(chan *model.RoomInfo, 8),
-		rankCh:     make(chan []*model.OnlineRankUser, 8),
+		roomID:  roomID,
+		cli:     cli,
+		cookie:  cookie,
+		cookies: cookies,
+		msgCh:   make(chan client.Message, 1024),
 	}
+	return
+}
+
+func (c *Client) Start(ctx context.Context) (err error) {
+	c.ctx, c.cf = context.WithCancel(ctx)
+
 	if err = c.connect(); err != nil {
-		return c, err
+		return
 	}
 
 	// 获取房间历史弹幕
 	go c.getHistoryDanmaku()
 	// 定时获取房间信息
-	go func(ctx context.Context) {
+	go func() {
 		var (
 			roomInfoTicker = time.NewTicker(1 * time.Minute)
 			rankTicker     = time.NewTicker(30 * time.Second)
@@ -91,7 +88,7 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 
 		for {
 			select {
-			case <-ctx.Done():
+			case <-c.ctx.Done():
 				return
 			case <-roomInfoTicker.C:
 				go c.syncRoomInfo()
@@ -99,25 +96,27 @@ func NewClient(cookie string, roomID uint32) (c *Client, err error) {
 				go c.syncRank()
 			}
 		}
-	}(c.ctx)
+	}()
 
 	go c.handlerMsg()
 	go c.videoHeartBeat()
-	return c, err
+
+	return
 }
 
-func (c *Client) Stop() {
+func (c *Client) Stop() error {
 	if c.cf != nil {
 		c.cf()
 	}
+	return nil
 }
 
-func (c *Client) Receive() (msgCh <-chan *model.Danmaku, roomInfoCh <-chan *model.RoomInfo, rankInfo <-chan []*model.OnlineRankUser) {
-	return c.msgCh, c.roomInfoCh, c.rankCh
+func (c *Client) Receive() <-chan client.Message {
+	return c.msgCh
 }
 
-func (c *Client) SendMsg(msg string) error {
-	return c.cli.LiveSendDanmaku(int64(c.roomID), 16777215, 25, 1, msg, 0)
+func (c *Client) Send(content string) error {
+	return c.cli.LiveSendDanmaku(int64(c.roomID), 16777215, 25, 1, content, 0)
 }
 
 func (c *Client) connect() error {
@@ -193,7 +192,7 @@ func (c *Client) handlerMsg() {
 				for _, msg := range splitMsg(zlibUnCompress(rawMsg[16:])) {
 					var (
 						body = gjson.ParseBytes(msg[16:])
-						dmk  = &model.Danmaku{}
+						dmk  = &Danmaku{}
 						cmd  = body.Get("cmd").String()
 					)
 
@@ -206,7 +205,7 @@ func (c *Client) handlerMsg() {
 						dmk.Author = body.Get("info.2.1").String()
 						dmk.Content = body.Get("info.1").String()
 						if medal := body.Get("info.0.15.user.medal"); medal.IsObject() {
-							dmk.Medal = &model.Medal{
+							dmk.Medal = &Medal{
 								Level: int(medal.Get("level").Int()),
 								Name:  medal.Get("name").String(),
 							}
@@ -285,7 +284,10 @@ func (c *Client) handlerMsg() {
 					dmk.Content = strings.ReplaceAll(dmk.Content, "\r", "")
 					dmk.Type = cmd
 					dmk.T = time.Now()
-					c.msgCh <- dmk
+					c.msgCh <- client.Message{
+						Type: client.BiliBiliDanmaku,
+						Data: dmk,
+					}
 				}
 			}
 		}
@@ -293,7 +295,7 @@ func (c *Client) handlerMsg() {
 }
 
 func (c *Client) syncRoomInfo() {
-	roomInfo := new(model.RoomInfo)
+	roomInfo := new(RoomInfo)
 
 	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo", httpx.WithPayload(map[string]any{
 		"room_ids": c.roomID,
@@ -326,7 +328,10 @@ func (c *Client) syncRoomInfo() {
 		}
 	}
 
-	c.roomInfoCh <- roomInfo
+	c.msgCh <- client.Message{
+		Type: client.BiliBiliRoomInfo,
+		Data: roomInfo,
+	}
 }
 
 func (c *Client) syncRank() {
@@ -347,10 +352,10 @@ func (c *Client) syncRank() {
 
 	var (
 		rawUsers = gjson.Get(string(resp.Body), "data.OnlineRankItem").Array()
-		rank     []*model.OnlineRankUser
+		rank     []*OnlineRankUser
 	)
 	for _, rawUser := range rawUsers {
-		user := model.OnlineRankUser{
+		user := OnlineRankUser{
 			Name:  rawUser.Get("name").String(),
 			Score: rawUser.Get("score").Int(),
 			Rank:  rawUser.Get("userRank").Int(),
@@ -358,7 +363,10 @@ func (c *Client) syncRank() {
 		rank = append(rank, &user)
 	}
 
-	c.rankCh <- rank
+	c.msgCh <- client.Message{
+		Type: client.BiliBiliRankInfo,
+		Data: rank,
+	}
 }
 
 var pktSeq uint32
@@ -427,28 +435,29 @@ func (c *Client) sendAuth(token string) (err error) {
 }
 
 func (c *Client) getHistoryDanmaku() {
-	c.historyOnce.Do(func() {
-		resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory", httpx.WithPayload(map[string]any{"roomid": c.roomID}))
-		if err != nil {
-			logx.Errorf("getHistoryDanmaku, err: %v", err)
-			return
-		}
-		if resp.Code != http.StatusOK || len(resp.Body) == 0 {
-			logx.Errorf("getHistoryDanmaku, status: %v", resp.Code)
-			return
-		}
+	resp, err := httpx.Getx(c.ctx, "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory", httpx.WithPayload(map[string]any{"roomid": c.roomID}))
+	if err != nil {
+		logx.Errorf("getHistoryDanmaku, err: %v", err)
+		return
+	}
+	if resp.Code != http.StatusOK || len(resp.Body) == 0 {
+		logx.Errorf("getHistoryDanmaku, status: %v", resp.Code)
+		return
+	}
 
-		histories := gjson.GetBytes(resp.Body, "data.room").Array()
-		for _, history := range histories {
-			t, _ := time.Parse(time.DateTime, history.Get("timeline").String())
-			c.msgCh <- &model.Danmaku{
+	histories := gjson.GetBytes(resp.Body, "data.room").Array()
+	for _, history := range histories {
+		t, _ := time.Parse(time.DateTime, history.Get("timeline").String())
+		c.msgCh <- client.Message{
+			Type: client.BiliBiliDanmaku,
+			Data: &Danmaku{
 				Author:  history.Get("nickname").String(),
 				Content: history.Get("text").String(),
 				Type:    "DANMU_MSG",
 				T:       t,
-			}
+			},
 		}
-	})
+	}
 }
 
 func (c *Client) videoHeartBeat() {

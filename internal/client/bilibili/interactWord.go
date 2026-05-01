@@ -1,4 +1,4 @@
-package biliclient
+package bilibili
 
 type interactWord struct {
 	UID  int64

@@ -1,4 +1,4 @@
-package biliclient
+package bilibili
 
 import (
 	"crypto/md5"
@@ -59,7 +59,7 @@ func EncodeWbi(params map[string]any, imgURL, subURL string) string {
 	for i, k := range keys {
 		queryBuilder.WriteString(k)
 		queryBuilder.WriteByte('=')
-		queryBuilder.WriteString(fmt.Sprint(params[k]))
+		fmt.Fprint(&queryBuilder, params[k])
 		if i != len(keys)-1 {
 			queryBuilder.WriteByte('&')
 		}

@@ -1,4 +1,4 @@
-package biliclient
+package bilibili
 
 import (
 	"bytes"

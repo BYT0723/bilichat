@@ -23,8 +23,8 @@ func init() {
 
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		fmt.Printf("cfgPath: %v\n", cfgPath)
-		_ = os.MkdirAll(filepath.Dir(cfgPath), 0700)
-		_ = os.WriteFile(cfgPath, []byte("{\n\t\"cookie\": \"\",\n\t\"room_id\": 0\n}"), 0700)
+		_ = os.MkdirAll(filepath.Dir(cfgPath), 0o700)
+		_ = os.WriteFile(cfgPath, []byte("{\n\t\"cookie\": \"\",\n\t\"room_id\": 0\n}"), 0o700)
 
 		fmt.Printf("Configuration %s has been generated, please modify the configuration in time\n", cfgPath)
 		os.Exit(0)

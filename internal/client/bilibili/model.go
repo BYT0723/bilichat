@@ -1,4 +1,4 @@
-package biliclient
+package bilibili
 
 type handShakeInfo struct {
 	UID      uint32 `json:"uid"`

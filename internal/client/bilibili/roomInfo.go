@@ -1,4 +1,4 @@
-package model
+package bilibili
 
 import "time"
 

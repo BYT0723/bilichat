@@ -1,15 +1,16 @@
 package ui
 
 import (
+	"cmp"
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/BYT0723/bilichat/internal/biliclient"
+	"github.com/BYT0723/bilichat/internal/client"
+	"github.com/BYT0723/bilichat/internal/client/bilibili"
 	"github.com/BYT0723/bilichat/internal/config"
-	"github.com/BYT0723/bilichat/internal/model"
 	"github.com/BYT0723/go-tools/ds"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -20,11 +21,7 @@ import (
 )
 
 var (
-	cli        *biliclient.Client
-	danmakuCh  <-chan *model.Danmaku
-	roomInfoCh <-chan *model.RoomInfo
-	rankCh     <-chan []*model.OnlineRankUser
-	initOnce   sync.Once
+	cli client.Client
 
 	roomInfoHomeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00afff"))
 	roomInfoZoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
@@ -60,7 +57,7 @@ type (
 	App    struct {
 		// 房间信息
 		roomInfoBox viewport.Model
-		roomInfo    model.RoomInfo
+		roomInfo    bilibili.RoomInfo
 
 		// sc 醒目留言
 		sc    *ds.RingBuffer[string]
@@ -96,20 +93,18 @@ type (
 )
 
 func NewApp(cookie string, roomID int64) *App {
-	if cookie == "" {
-		cookie = config.Config.Cookie
+	var err error
+	cookie = cmp.Or(cookie, config.Config.Cookie)
+	roomID = cmp.Or(roomID, config.Config.RoomID)
+
+	cli, err = bilibili.NewClient(cookie, uint32(roomID))
+	if err != nil {
+		panic(err)
 	}
-	if roomID == 0 {
-		roomID = config.Config.RoomID
+
+	if err := cli.Start(context.Background()); err != nil {
+		panic(err)
 	}
-	initOnce.Do(func() {
-		var err error
-		cli, err = biliclient.NewClient(cookie, uint32(roomID))
-		if err != nil {
-			panic(err)
-		}
-		danmakuCh, roomInfoCh, rankCh = cli.Receive()
-	})
 
 	roomInfo := viewport.New(30, 1)
 	roomInfo.KeyMap = viewport.KeyMap{}
@@ -166,12 +161,7 @@ func NewApp(cookie string, roomID int64) *App {
 }
 
 func (m *App) Init() tea.Cmd {
-	return tea.Batch(
-		textarea.Blink,
-		listenDanmaku(),
-		listenRoomInfo(),
-		listenRank(),
-	)
+	return tea.Batch(textarea.Blink, listenMessage)
 }
 
 func (m *App) refreshRoomInfo() {
@@ -248,166 +238,14 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scBox.GotoBottom()
 		}
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			return m, tea.Quit
-		case tea.KeyEsc:
-			if m.mode == ModeInput {
-				m.inputArea.Blur()
-				m.mode = ModeNormal
-			}
-		case tea.KeyCtrlI:
-			if m.mode == ModeNormal {
-				switch modelIndexes[m.index] {
-				case "danmaku":
-					m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
-					m.messageBox.KeyMap = viewport.KeyMap{}
-				case "sc":
-					m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
-					m.scBox.KeyMap = viewport.KeyMap{}
-				case "gift":
-					m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
-					m.giftBox.KeyMap = viewport.KeyMap{}
-				case "rank":
-					m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
-					m.rankBox.KeyMap = viewport.KeyMap{}
-				}
-				m.inputArea.Focus()
-				m.mode = ModeInput
-			}
-		case tea.KeyCtrlJ, tea.KeyCtrlK:
-			if m.mode == ModeNormal {
-				switch modelIndexes[m.index] {
-				case "danmaku":
-					m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
-					m.messageBox.KeyMap = viewport.KeyMap{}
-				case "sc":
-					m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
-					m.scBox.KeyMap = viewport.KeyMap{}
-				case "gift":
-					m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
-					m.giftBox.KeyMap = viewport.KeyMap{}
-				case "rank":
-					m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
-					m.rankBox.KeyMap = viewport.KeyMap{}
-				}
-				switch msg.Type {
-				case tea.KeyCtrlJ:
-					m.index = (m.index + 1) % len(modelIndexes)
-				case tea.KeyCtrlK:
-					m.index = (m.index - 1 + len(modelIndexes)) % len(modelIndexes)
-				}
-			}
-
-			if m.mode == ModeInput {
-				m.inputArea.Blur()
-				m.mode = ModeNormal
-			}
-
-			switch modelIndexes[m.index] {
-			case "danmaku":
-				m.messageBox.Style = m.messageBox.Style.Border(activeBorderStyle)
-				m.messageBox.KeyMap = defaultKeyMap
-			case "sc":
-				m.scBox.Style = m.scBox.Style.Border(activeBorderStyle)
-				m.scBox.KeyMap = defaultKeyMap
-			case "gift":
-				m.giftBox.Style = m.giftBox.Style.Border(activeBorderStyle)
-				m.giftBox.KeyMap = defaultKeyMap
-			case "rank":
-				m.rankBox.Style = m.rankBox.Style.Border(activeBorderStyle)
-				m.rankBox.KeyMap = defaultKeyMap
-			}
-
-		case tea.KeyEnter:
-			switch m.mode {
-			case ModeInput:
-				message := m.inputArea.Value()
-				if len(message) > 0 {
-					if err := cli.SendMsg(message); err != nil {
-						m.messages.Push(m.senderStyle.Render("system: ") + "消息发送失败")
-						m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
-						m.messageBox.GotoBottom()
-					}
-					m.inputArea.Reset()
-				}
-			}
+		if subCmd := m.handleKeyMap(msg); subCmd != nil {
+			return m, subCmd
 		}
-	case *model.Danmaku:
-		switch msg.Type {
-		case "GUARD_BUY", "COMBO_SEND", "SEND_GIFT":
-			m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
-			m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts.Values(), "\n")))
-			if m.mode == ModeInput {
-				m.giftBox.GotoBottom()
-			}
-		case "INTERACT_WORD":
-			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
-		case "INTERACT_WORD_V2":
-			m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author), msg.Content))
-		case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
-			m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(msg.Author+":"), msg.Content))
-			m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
-			if m.mode == ModeInput {
-				m.scBox.GotoBottom()
-			}
-		case "WATCHED_CHANGE":
-			m.roomInfo.Watched = msg.Content
-			m.refreshRoomInfo()
-		case "ONLINE_RANK_COUNT":
-			m.roomInfo.Online = msg.Content
-			m.refreshRoomInfo()
-		case "LIKE_INFO_V3_UPDATE":
-			m.roomInfo.Liked = msg.Content
-			m.refreshRoomInfo()
-		default:
-			var medal string
-			if msg.Medal != nil {
-				medal = medalStyle.Render(msg.Medal.Name+" ") + medalLevelStyle.Render(fmt.Sprintf("%2d", msg.Medal.Level)) + " "
-			}
-			author := SanitizeViewportText(msg.Author)
-			content := SanitizeViewportText(msg.Content)
-			m.messages.Push(fmt.Sprintf("%s %s%s %s",
-				m.timeStyle.Render(msg.T.Format("[15:04]")),
-				medal,
-				m.senderStyle.Render(author+":"),
-				content,
-			))
-			m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
-			if m.mode == ModeInput {
-				m.messageBox.GotoBottom()
-			}
+	case client.Message:
+		if subcmds := m.handleMessage(msg); len(subcmds) > 0 {
+			cmds = append(cmds, subcmds...)
 		}
-		cmds = append(cmds, listenDanmaku())
-	case *model.RoomInfo:
-		m.roomInfo.Title = msg.Title
-		m.roomInfo.Uname = msg.Uname
-		m.roomInfo.ParentAreaName = msg.ParentAreaName
-		m.roomInfo.AreaName = msg.AreaName
-		m.roomInfo.Uptime = msg.Uptime
-		m.refreshRoomInfo()
-
-		cmds = append(cmds, listenRoomInfo())
-
-	case []*model.OnlineRankUser:
-		users := make([]string, len(msg))
-		for i, u := range msg {
-			var (
-				t     = "  "
-				score = strconv.Itoa(int(u.Score))
-			)
-			if int(u.Rank) <= len(rankIcons) {
-				t = rankStyle[u.Rank-1].Render(rankIcons[u.Rank-1])
-			}
-			info := fmt.Sprintf("%s %s", t, u.Name)
-
-			spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score) - m.rankBox.Style.GetHorizontalBorderSize()
-			users[i] = info + strings.Repeat(" ", spaceLen) + score
-
-		}
-		m.rankBox.SetContent(strings.Join(users, "\n"))
-
-		cmds = append(cmds, listenRank())
+		cmds = append(cmds, listenMessage)
 	case errMsg:
 		m.err = msg
 		return m, nil
@@ -434,29 +272,186 @@ func (m *App) View() string {
 	)
 }
 
-func listenDanmaku() tea.Cmd {
-	return func() tea.Msg {
-		if msg, ok := <-danmakuCh; ok {
-			return msg
+func (m *App) handleKeyMap(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return tea.Quit
+
+	case tea.KeyEsc:
+		if m.mode == ModeInput {
+			m.inputArea.Blur()
+			m.mode = ModeNormal
 		}
-		return nil
+
+	case tea.KeyCtrlI:
+		if m.mode == ModeNormal {
+			switch modelIndexes[m.index] {
+			case "danmaku":
+				m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
+				m.messageBox.KeyMap = viewport.KeyMap{}
+			case "sc":
+				m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
+				m.scBox.KeyMap = viewport.KeyMap{}
+			case "gift":
+				m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
+				m.giftBox.KeyMap = viewport.KeyMap{}
+			case "rank":
+				m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
+				m.rankBox.KeyMap = viewport.KeyMap{}
+			}
+			m.inputArea.Focus()
+			m.mode = ModeInput
+		}
+
+	case tea.KeyCtrlJ, tea.KeyCtrlK:
+		if m.mode == ModeNormal {
+			switch modelIndexes[m.index] {
+			case "danmaku":
+				m.messageBox.Style = m.messageBox.Style.Border(normalBorderStyle)
+				m.messageBox.KeyMap = viewport.KeyMap{}
+			case "sc":
+				m.scBox.Style = m.scBox.Style.Border(normalBorderStyle)
+				m.scBox.KeyMap = viewport.KeyMap{}
+			case "gift":
+				m.giftBox.Style = m.giftBox.Style.Border(normalBorderStyle)
+				m.giftBox.KeyMap = viewport.KeyMap{}
+			case "rank":
+				m.rankBox.Style = m.rankBox.Style.Border(normalBorderStyle)
+				m.rankBox.KeyMap = viewport.KeyMap{}
+			}
+			switch msg.Type {
+			case tea.KeyCtrlJ:
+				m.index = (m.index + 1) % len(modelIndexes)
+			case tea.KeyCtrlK:
+				m.index = (m.index - 1 + len(modelIndexes)) % len(modelIndexes)
+			}
+		}
+
+		if m.mode == ModeInput {
+			m.inputArea.Blur()
+			m.mode = ModeNormal
+		}
+
+		switch modelIndexes[m.index] {
+		case "danmaku":
+			m.messageBox.Style = m.messageBox.Style.Border(activeBorderStyle)
+			m.messageBox.KeyMap = defaultKeyMap
+		case "sc":
+			m.scBox.Style = m.scBox.Style.Border(activeBorderStyle)
+			m.scBox.KeyMap = defaultKeyMap
+		case "gift":
+			m.giftBox.Style = m.giftBox.Style.Border(activeBorderStyle)
+			m.giftBox.KeyMap = defaultKeyMap
+		case "rank":
+			m.rankBox.Style = m.rankBox.Style.Border(activeBorderStyle)
+			m.rankBox.KeyMap = defaultKeyMap
+		}
+
+	case tea.KeyEnter:
+		switch m.mode {
+		case ModeInput:
+			message := m.inputArea.Value()
+			if len(message) > 0 {
+				if err := cli.Send(message); err != nil {
+					m.messages.Push(m.senderStyle.Render("system: ") + "消息发送失败")
+					m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
+					m.messageBox.GotoBottom()
+				}
+				m.inputArea.Reset()
+			}
+		}
 	}
+	return nil
 }
 
-func listenRoomInfo() tea.Cmd {
-	return func() tea.Msg {
-		if msg, ok := <-roomInfoCh; ok {
-			return msg
+func (m *App) handleMessage(msg client.Message) (cmds []tea.Cmd) {
+	switch msg.Type {
+	case client.BiliBiliDanmaku:
+		v, ok := msg.Data.(*bilibili.Danmaku)
+		if ok {
+			switch v.Type {
+			case "GUARD_BUY", "COMBO_SEND", "SEND_GIFT":
+				m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(v.Author), v.Content))
+				m.giftBox.SetContent(lipgloss.NewStyle().Width(m.giftBox.Width).Render(strings.Join(m.gifts.Values(), "\n")))
+				if m.mode == ModeInput {
+					m.giftBox.GotoBottom()
+				}
+			case "INTERACT_WORD":
+				m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(v.Author), v.Content))
+			case "INTERACT_WORD_V2":
+				m.interInfo.SetContent(fmt.Sprintf("%s %s", m.senderStyle.Render(v.Author), v.Content))
+			case "SUPER_CHAT_MESSAGE", "SUPER_CHAT_MESSAGE_JPN":
+				m.sc.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(v.Author+":"), v.Content))
+				m.scBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.sc.Values(), "\n")))
+				if m.mode == ModeInput {
+					m.scBox.GotoBottom()
+				}
+			case "WATCHED_CHANGE":
+				m.roomInfo.Watched = v.Content
+				m.refreshRoomInfo()
+			case "ONLINE_RANK_COUNT":
+				m.roomInfo.Online = v.Content
+				m.refreshRoomInfo()
+			case "LIKE_INFO_V3_UPDATE":
+				m.roomInfo.Liked = v.Content
+				m.refreshRoomInfo()
+			default:
+				var medal string
+				if v.Medal != nil {
+					medal = medalStyle.Render(v.Medal.Name+" ") + medalLevelStyle.Render(fmt.Sprintf("%2d", v.Medal.Level)) + " "
+				}
+				author := SanitizeViewportText(v.Author)
+				content := SanitizeViewportText(v.Content)
+				m.messages.Push(fmt.Sprintf("%s %s%s %s",
+					m.timeStyle.Render(v.T.Format("[15:04]")),
+					medal,
+					m.senderStyle.Render(author+":"),
+					content,
+				))
+				m.messageBox.SetContent(lipgloss.NewStyle().Width(m.messageBox.Width).Render(strings.Join(m.messages.Values(), "\n")))
+				if m.mode == ModeInput {
+					m.messageBox.GotoBottom()
+				}
+			}
 		}
-		return nil
+	case client.BiliBiliRankInfo:
+		v, ok := msg.Data.([]*bilibili.OnlineRankUser)
+		if ok {
+
+			users := make([]string, len(v))
+			for i, u := range v {
+				var (
+					t     = "  "
+					score = strconv.Itoa(int(u.Score))
+				)
+				if int(u.Rank) <= len(rankIcons) {
+					t = rankStyle[u.Rank-1].Render(rankIcons[u.Rank-1])
+				}
+				info := fmt.Sprintf("%s %s", t, u.Name)
+
+				spaceLen := m.rankBox.Width - lipgloss.Width(info) - lipgloss.Width(score) - m.rankBox.Style.GetHorizontalBorderSize()
+				users[i] = info + strings.Repeat(" ", spaceLen) + score
+
+			}
+			m.rankBox.SetContent(strings.Join(users, "\n"))
+		}
+	case client.BiliBiliRoomInfo:
+		v, ok := msg.Data.(*bilibili.RoomInfo)
+		if ok {
+			m.roomInfo.Title = v.Title
+			m.roomInfo.Uname = v.Uname
+			m.roomInfo.ParentAreaName = v.ParentAreaName
+			m.roomInfo.AreaName = v.AreaName
+			m.roomInfo.Uptime = v.Uptime
+			m.refreshRoomInfo()
+		}
 	}
+	return
 }
 
-func listenRank() tea.Cmd {
-	return func() tea.Msg {
-		if msg, ok := <-rankCh; ok {
-			return msg
-		}
-		return nil
+func listenMessage() tea.Msg {
+	if msg, ok := <-cli.Receive(); ok {
+		return msg
 	}
+	return nil
 }
