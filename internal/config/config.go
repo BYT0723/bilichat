@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"text/template"
 
 	"github.com/BYT0723/go-tools/cfg"
 	"github.com/BYT0723/go-tools/logx"
@@ -18,20 +19,31 @@ type Configuration struct {
 	History History `cfg:"history"`
 }
 
+const cfgTemplate = `cookie: xxx
+room_id: 0
+`
+
 func init() {
-	cfgPath := filepath.Join(getConfigDir("bilichat"), "config.yaml")
+	var (
+		dir     = getConfigDir("bilichat")
+		cfgPath = filepath.Join(dir, "config.yaml")
+	)
 
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		fmt.Printf("cfgPath: %v\n", cfgPath)
 		_ = os.MkdirAll(filepath.Dir(cfgPath), 0o700)
-		_ = os.WriteFile(cfgPath, []byte("{\n\t\"cookie\": \"\",\n\t\"room_id\": 0\n}"), 0o700)
-
+		f, err2 := os.Create(cfgPath)
+		if err2 != nil {
+			panic(err2)
+		}
+		defer f.Close()
+		template.Must(template.New("config").Parse(cfgTemplate)).Execute(f, nil)
 		fmt.Printf("Configuration %s has been generated, please modify the configuration in time\n", cfgPath)
 		os.Exit(0)
 	}
 
 	cfg.Init(
-		cfg.WithConfigFile(cfgPath),
+		cfg.WithConfigName("config"),
+		cfg.WithConfigPath(".", dir),
 		cfg.WithConfigType("yaml"),
 		cfg.WithDefaultUnMarshal(&Config),
 	)
