@@ -369,7 +369,9 @@ func (m *App) handleMessage(msg client.Message) (cmds []tea.Cmd) {
 	case client.BiliBiliDanmaku:
 		v, ok := msg.Data.(*bilibili.Danmaku)
 		if ok {
+			if !config.Config.Emote.Disable {
 			v.Content = bilibili.ReplaceEmoteCodes(v.Content)
+		}
 			switch v.Type {
 			case "GUARD_BUY", "COMBO_SEND", "SEND_GIFT":
 				m.gifts.Push(fmt.Sprintf("%s %s", m.senderStyle.Render(v.Author), v.Content))

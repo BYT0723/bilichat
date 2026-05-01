@@ -17,10 +17,13 @@ type Configuration struct {
 	Cookie  string  `cfg:"cookie"`
 	RoomID  int64   `cfg:"room_id"`
 	History History `cfg:"history"`
+	Emote   Emote   `cfg:"emote"`
 }
 
 const cfgTemplate = `cookie: xxx
 room_id: 0
+emote:
+  disable: false
 `
 
 func init() {
